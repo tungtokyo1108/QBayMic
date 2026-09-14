@@ -1,0 +1,13 @@
+# Core numerical stack
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.2
+
+# Quantum E-step engines (ED / VarQITE / VQT).
+# The classical methods (greedy_vb, pt) run without these; install them to use
+# the quantum methods. CPU builds are sufficient — no GPU is required.
+jax>=0.4
+pennylane>=0.34
+
+# Tested with: numpy 2.3.5, scipy 1.16.3, scikit-learn 1.7.2,
+#              jax 0.10.1, pennylane 0.44.1 (CPU).

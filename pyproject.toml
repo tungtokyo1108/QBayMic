@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qbaymic"
+version = "1.0.0"
+description = "Quantum Bayesian clustering of microbiome count data (DMM-SVVS with classical and quantum E-steps)."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "scikit-learn>=1.2",
+]
+
+[project.optional-dependencies]
+# The quantum E-step engines (ed / varqite / vqt). The classical methods run
+# without these. CPU builds are sufficient — no GPU required.
+quantum = [
+    "jax>=0.4",
+    "pennylane>=0.34",
+]
+
+[tool.setuptools]
+# Vendored engine .py files live under qbaymic/_engines/ as package data.
+packages = ["qbaymic", "qbaymic._engines"]
