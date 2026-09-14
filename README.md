@@ -74,7 +74,6 @@ separation (rather than finite-sample noise). It predicts the regime:
 ```bash
 python examples/01_quickstart.py          # data → σ → fit → ARI
 python examples/02_quantum_vs_classical.py # all six methods on one instance
-python examples/03_sigma_diagnostic.py     # σ on real (unlabelled) data
 ```
 
 ## Tests
@@ -83,35 +82,6 @@ python examples/03_sigma_diagnostic.py     # σ on real (unlabelled) data
 python -m pytest tests/          # or: python tests/test_smoke.py
 ```
 
-The smoke tests fit every method on a tiny instance and exercise the σ
-diagnostic on both paths; they run in well under a minute.
-
-## Choosing hyperparameters
-
-`QBayMic(...)` ships with the paper's shared reference configuration. To tune per
-dataset, the validated random-search routines are vendored under
-`qbaymic/_engines/` (`random_search_*`); a fair best-vs-best protocol gives each
-method its own `K`-aware search.
-
-## Repository layout
-
-```
-qbaymic/
-  __init__.py        public API
-  models.py          the unified QBayMic estimator (thin wrappers)
-  barrier.py         the σ diagnostic (synthetic + real-data paths)
-  data.py            the synthetic count generator
-  _engines/          the validated method implementations (used as-is)
-examples/            runnable scripts
-tests/               CI smoke tests
-```
-
-The modules under `qbaymic/_engines/` are the exact implementations used in the
-paper; the top-level package wraps them behind a clean, documented API.
-
-## Citation
-
-If you use QBayMic, please cite the accompanying paper (see `CITATION`/preprint).
 
 ## License
 
