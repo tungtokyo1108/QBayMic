@@ -1,31 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DMM-SVVS Variational Inference — Improved Version (v2)
-
-All improvements are direct fixes for the four root causes identified by
-comparing performance on synthetic vs. real CDI data:
-
-  Root cause 1 — OR logic in pruning rescued non-empty but spurious clusters
-    Fix: AND logic + data-adaptive minimum cluster floor
-
-  Root cause 2 — nu=10 spreads stick-breaking mass across all K components,
-    preventing pruning to the true K on real data
-    Fix: nu made adaptive (1/K_max by default); large nu explicitly warned
-
-  Root cause 3 — CAVI converges at iter 40 before any pruning attempt (iter 50+),
-    so all K clusters survive training regardless of their quality
-    Fix: pruning starts at iter 10, triggered every 5 iterations;
-         convergence checked only after at least one pruning pass has occurred;
-         relative ELBO tolerance tightened to 1e-4
-
-  Root cause 4 — selection_prior=0.1 gives log-odds ≈ -2.2 per OTU,
-    deactivating feature selection on high-dimensional real data
-    Fix: xi_1/xi_2 default to 1.0/1.0 (neutral Beta(1,1) prior);
-         selection_prior now controls the initial f warm-start only,
-         not the Beta hyperparameters
-
-Author: Improved version following Dang et al. (2022)
+DMM-SVVS Variational Inference 
 """
 
 import numpy as np
@@ -50,9 +26,7 @@ class NumericalStability:
 
 class DMM_SVVS_Variational_v2:
     """
-    Dirichlet Multinomial Mixture with Variational Variable Selection — v2
-
-    Improved over v1 in four specific ways (see module docstring).
+    Dirichlet Multinomial Mixture with Variational Variable Selection 
 
     Parameters
     ----------
@@ -141,11 +115,7 @@ class DMM_SVVS_Variational_v2:
 
     def _resolve_nu(self):
         """
-        Resolve nu from 'auto' or a user float.   [FIX 2]
-
-        'auto' sets nu = 1/K_max so that the DP prior weakly prefers
-        (K_max / e) ≈ 0.37·K_max active clusters — a neutral starting point
-        that does not pre-commit to many or few clusters.
+        Resolve nu from 'auto'  
         """
         if self.nu_input == 'auto':
             return 1.0 / self.K_max
@@ -168,8 +138,6 @@ class DMM_SVVS_Variational_v2:
             else int(self.min_clusters)
         )
 
-        # Adaptive minimum cluster size for pruning   [FIX 1]
-        # Keep a cluster if it holds more than N / (5 * K_max) samples.
         self._min_cluster_size = max(1.0, self.N / (5.0 * self.K_max))
 
         if self.verbose >= 1:
@@ -181,14 +149,14 @@ class DMM_SVVS_Variational_v2:
         # Responsibilities from k-means
         self.r = self._init_responsibilities_kmeans(X, random_state)
 
-        # Feature selection warm-start at selection_prior   [FIX 4: does not set Beta hyper]
+        # Feature selection warm-start at selection_prior  
         self.f = np.full((self.N, self.S), self.selection_prior)
 
         # Stick-breaking: symmetric init
         self.theta       = np.ones(self.K)
         self.theta_prime = np.ones(self.K) * self.nu
 
-        # Beta prior on feature selection probabilities — neutral default [FIX 4]
+        # Beta prior on feature selection probabilities
         # xi_1 = xi_2 = 1.0  →  Beta(1,1) = Uniform[0,1]
         self.xi_star = np.empty((self.S, 2))
         self.xi_star[:, 0] = self.xi_1
@@ -266,12 +234,12 @@ class DMM_SVVS_Variational_v2:
         self._cache = {}
 
     # ─────────────────────────────────────────────────────────────────────
-    # CAVI update steps  (all vectorized — unchanged from v1)
+    # CAVI update steps 
     # ─────────────────────────────────────────────────────────────────────
 
     def _expected_log_lik(self, X):
         """
-        (N, K) expected log-likelihood via exact E[log α] form (no Taylor approx).
+        (N, K) expected log-likelihood via exact E[log α] form.
 
         E[log p(x_i | z_i=k)] = Σ_j [ f_j·x_ij·E[log α_kj]
                                       + (1−f_j)·x_ij·E[log β_j] ]
@@ -298,7 +266,7 @@ class DMM_SVVS_Variational_v2:
 
     def _update_f(self, X):
         """
-        Per-feature selection update via exact E[log α] matmul (v3 technique).
+        Per-feature selection update via exact E[log α] matmul.
 
         log_odds_j = E[log(ξ1_j/ξ2_j)]
                    + Σ_i Σ_k r_ik · x_ij · E[log α_kj]   (sel term)
@@ -342,7 +310,7 @@ class DMM_SVVS_Variational_v2:
 
     def _update_lambda_star(self, X):
         """
-        Exact conjugate CAVI update (v3 technique — one matmul, no loop):
+        Exact conjugate CAVI update:
           λ_kj = ζ + Σ_i r_ik · f_j · x_ij  =  ζ + r^T @ (f * X)
         """
         f_avg = self.f.mean(axis=0)          # (S,) per-feature mean
@@ -354,7 +322,7 @@ class DMM_SVVS_Variational_v2:
 
     def _update_iota_star(self, X):
         """
-        Exact conjugate CAVI update (v3 technique):
+        Exact conjugate CAVI update:
           ι_j = η + Σ_i (1 − f_j) · x_ij
         """
         f_avg = self.f.mean(axis=0)   # (S,)
@@ -368,7 +336,7 @@ class DMM_SVVS_Variational_v2:
     # ─────────────────────────────────────────────────────────────────────
 
     def _compute_elbo(self, X):
-        """Fast ELBO using the same matmul expected log-likelihood as v3."""
+        """Fast ELBO using the same matmul expected log-likelihood."""
         EPS      = NumericalStability.EPS
         E_log_pi = self._E_log_pi()
         ll       = self._expected_log_lik(X)   # (N, K) — one matmul
@@ -378,7 +346,7 @@ class DMM_SVVS_Variational_v2:
         return elbo
 
     # ─────────────────────────────────────────────────────────────────────
-    # Pruning  [FIX 1 + FIX 3]
+    # Pruning 
     # ─────────────────────────────────────────────────────────────────────
 
     def _compute_weights(self):
@@ -391,16 +359,11 @@ class DMM_SVVS_Variational_v2:
 
     def _prune_empty_clusters(self):
         """
-        Prune clusters that are genuinely empty by BOTH criteria.   [FIX 1]
+        Prune clusters that are genuinely empty by BOTH criteria.  
 
         A cluster is kept if:
           weight  > prune_threshold          (stick-breaking support)
           AND  sample count > min_cluster_size  (data support)
-
-        This replaces the original OR logic which prevented pruning on real
-        data where every cluster accumulates some samples.
-
-        _min_clusters is always respected as a hard floor.
         """
         weights       = self._compute_weights()
         cluster_sizes = self.r.sum(axis=0)
@@ -435,20 +398,12 @@ class DMM_SVVS_Variational_v2:
         return False
 
     # ─────────────────────────────────────────────────────────────────────
-    # Main fit loop   [FIX 3 — earlier / more frequent pruning]
+    # Main fit loop  
     # ─────────────────────────────────────────────────────────────────────
 
     def fit(self, X):
         """
         Fit via coordinate ascent variational inference.
-
-        Key changes vs. v1:
-         - Pruning starts at prune_start (default 10) not 50.
-         - Pruning runs every prune_every (default 5) iterations.
-         - Convergence is checked only after at least one pruning pass,
-           so the model cannot converge with all K_max clusters intact
-           when pruning would remove most of them.
-         - Relative ELBO tolerance is 1e-4 (tighter than v1's 1e-3).
         """
         X            = check_array(X, dtype=np.float64)
         random_state = check_random_state(self.random_state)
@@ -554,10 +509,6 @@ class DMM_SVVS_Variational_v2:
                     }
         return signatures
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Quick smoke-test
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
