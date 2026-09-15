@@ -1,93 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Random Search Hyperparameter Optimisation for DMM_SVVS_VQT_QAVB_JAX_Fast (v4_2fast)
+Random Search Hyperparameter Optimisation for DMM_SVVS_VQT_QAVB_JAX_Fast
 ====================================================================================
-
-Mirrors `random_search_qavb_v3_1.py` in structure and API, but targets the
-CPU-parallel JAX VQT model — DMM_SVVS_VQT_QAVB_JAX_Fast from
-DMM_SVVS_Variational_QAVB_v4_2fast — and maximises ARI against ground-truth
-labels by random search over the same six clustering-relevant hyperparameters.
-
-VQT prepares the per-sample Gibbs state by free-energy minimisation
-(Verdon et al. arXiv:1910.02071) rather than VarQITE's McLachlan imaginary-time
-evolution, so the FIXED params below are the VQT operating point (learning
-rates, update_strategy, n_vqt_steps, …) — NOT VarQITE's metric_refresh/dtau_max.
-The v4_2fast variant adds jax.pmap sharding of the per-sample Adam kernel across
-CPU cores; the search uses cpu_parallel="auto" so each trial runs the E-step in
-parallel.
-
-The boolean toggle use_trigamma_correction is FIXED to False throughout the
-search (per the user's memory: trigamma correction off for QAVB).
-
-Hyperparameters searched
-------------------------
-  K_max            int      [low, high]          uniform integer
-  nu               float    (0, ∞)               log-uniform float
-  selection_prior  float    (0, 1)               uniform float
-  prune_threshold  float    (0, 1)               log-uniform float
-  tau1             int      [low, high]          uniform integer (quantum phase end)
-  tau2             int      tau1 + delta         uniform integer (thermal phase end)
-
-Hyperparameters held fixed
---------------------------
-  use_trigamma_correction = False   (per user memory)
-  zeta, eta, xi_1, xi_2   = 1.0
-  beta0                   = 30.0
-  s0                      = 1.0
-  tol                     = 1e-4
-  max_iter                = 400     (search budget; refit_best uses 600)
-  prune_start             = 10
-  prune_every             = 5
-  min_clusters            = None
-  # VQT-specific (the v4 operating point)
-  ansatz_depth            = 3
-  n_vqt_steps             = 40
-  learning_rate           = 0.05    (θ ansatz Adam step)
-  learning_rate_phi       = 0.1     (φ categorical-logits Adam step)
-  update_strategy         = "joint"
-  n_phi_warmup            = 5        (only used by update_strategy="phi_first")
-  mixer                   = "transverse_field"
-  warm_start              = True
-  adaptive_expressivity   = True    (K-adaptive depth/steps floor — v4 fix)
-  enumerate_basis         = True
-  # Layer-C dedup (inherited from v4_1)
-  dedup_n_clusters        = None    (per-sample path; set "auto" for big N)
-  # v4_2 JAX knobs
-  sample_batch_size       = None    (one vmap over all N within each shard)
-  jit_warmup              = True
-  # v4_2fast CPU-parallel knobs
-  cpu_parallel            = "auto"  (jax.pmap shards the E-step across cores)
-  cpu_parallel_min_batch  = 64
-
-Usage
------
-    from random_search_qavb_v4_2fast import random_search, refit_best, print_top_k
-
-    results = random_search(
-        X           = X,
-        true_labels = true_labels,
-        n_trials    = 30,
-        master_seed = 42,
-        verbose     = True,
-    )
-
-    print_top_k(results, top_k=10)
-
-    best_model = refit_best(
-        X           = X,
-        true_labels = true_labels,
-        best_result = results["best_result"],
-        n_restarts  = 3,
-    )
-
-Returns
--------
-random_search() returns a dict with:
-    best_config  : dict  — hyperparameters of the best trial
-    best_result  : dict  — full record of the best trial (ari, nmi, K, ...)
-    all_results  : list  — every trial record sorted by ARI descending
-    model_class  : str   — "VQT_QAVB_JAX_Fast_v4_2"
 """
 
 import json
@@ -103,7 +18,7 @@ warnings.filterwarnings("ignore")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Default search ranges  (same defaults as random_search_qavb_v3_1.py / v2)
+# Default search ranges 
 # ─────────────────────────────────────────────────────────────────────────────
 
 DEFAULT_K_MAX_RANGE           = (3, 15)        # int,   uniform
@@ -148,12 +63,6 @@ FIXED_PARAMS = dict(
     sample_batch_size       = None,   # one vmap over all N within each shard
     jit_warmup              = True,
     # ── v4_2fast CPU-parallel knobs ──────────────────────────────────────
-    # cpu_parallel="auto" shards the per-sample Adam free-energy kernel across
-    # the XLA host devices created at module import (V4_2_CPU_DEVICES env), so
-    # each trial's VQT E-step runs on many cores. Numerically identical to the
-    # single-device path; set cpu_parallel=False to disable (== v4_2). The
-    # device COUNT is fixed at import — control it with the env var, e.g.
-    #   V4_2_CPU_DEVICES=16 python random_search_qavb_v4_2fast.py
     cpu_parallel            = "auto",
     cpu_parallel_min_batch  = 64,
 )
@@ -225,24 +134,7 @@ def _sample_config(rng,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_trial(X, true_labels, config, trial_seed):
-    """
-    Fit one DMM_SVVS_VQT_QAVB_JAX_Fast configuration and return ARI, NMI,
-    K_estimated, elapsed.
 
-    On any exception (numerical failure, invalid config) the trial returns
-    ARI = NMI = -1 with the error message attached.
-
-    Parameters
-    ----------
-    X            : (N, S) float array
-    true_labels  : (N,)   int array
-    config       : dict   — sampled hyperparameters
-    trial_seed   : int    — random_state for this trial
-
-    Returns
-    -------
-    dict with keys: ari, nmi, K_estimated, elapsed, config, trial_seed, error
-    """
     params = {**FIXED_PARAMS, **config, "random_state": trial_seed}
     t0     = _time.time()
     error  = None
@@ -286,46 +178,7 @@ def random_search(X,
                   tau2_delta_range        = DEFAULT_TAU2_DELTA_RANGE,
                   master_seed             = 42,
                   verbose                 = True):
-    """
-    Random search over DMM_SVVS_VQT_QAVB_JAX_Fast hyperparameters,
-    maximising ARI.
-
-    use_trigamma_correction is fixed to False throughout the search.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (N, S)
-        Count data matrix.
-    true_labels : np.ndarray, shape (N,)
-        Ground-truth cluster labels for ARI evaluation.
-    n_trials : int
-        Number of random configurations to evaluate.
-    K_max_range : tuple (int_low, int_high)
-        Truncation level range.  Both ends inclusive.
-    nu_range : tuple (float_low, float_high)
-        DP concentration parameter range.  Sampled log-uniformly.
-    selection_prior_range : tuple (float_low, float_high)
-        Initial feature-selection warm-start.  Sampled uniformly.
-    prune_threshold_range : tuple (float_low, float_high)
-        Cluster deletion threshold.  Sampled log-uniformly.
-    tau1_range : tuple (int_low, int_high)
-        Quantum-annealing phase length, in iterations.
-    tau2_delta_range : tuple (int_low, int_high)
-        Additional iterations after tau1 for the thermal-annealing phase.
-        Actual tau2 = tau1 + delta.
-    master_seed : int
-        Seed for the search RNG — makes the entire run reproducible.
-    verbose : bool
-        Print a live per-trial progress table if True.
-
-    Returns
-    -------
-    dict with keys:
-        best_config   : dict  — hyperparameters of the best trial
-        best_result   : dict  — full result record of the best trial
-        all_results   : list  — all trial records sorted by ARI descending
-        model_class   : str   — "VQT_QAVB_JAX_Fast_v4_2"
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
     master_rng  = np.random.default_rng(int(master_seed))
@@ -412,33 +265,7 @@ def refit_best(X,
                n_restarts   = 5,
                max_iter     = 600,
                verbose      = True):
-    """
-    Re-fit DMM_SVVS_VQT_QAVB_JAX_Fast using the best configuration found by
-    random_search, running multiple independent restarts and keeping the
-    one with the highest ARI.
-
-    The original trial_seed that produced the best ARI during the search is
-    always used as one of the restart seeds, guaranteeing the search result
-    is reproduced at minimum.
-
-    Parameters
-    ----------
-    X            : np.ndarray, shape (N, S)
-    true_labels  : np.ndarray, shape (N,)
-    best_result  : dict
-        The dict under results["best_result"] returned by random_search().
-        Must contain keys "config" and "trial_seed".
-    n_restarts   : int
-        Total number of independent random restarts.
-    max_iter     : int
-        Maximum CAVI iterations per restart (higher than search budget).
-    verbose      : bool
-
-    Returns
-    -------
-    Fitted DMM_SVVS_VQT_QAVB_JAX_Fast instance with the highest ARI across
-    all restarts.
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
 
