@@ -3,75 +3,6 @@
 """
 DMM_SVVS_ParallelTempering_VB.py — replica-exchange (parallel-tempering) VB
 ============================================================================
-
-THE DECISIVE CLASSICAL BASELINE FOR T8 (professor's "Test 4 — run this FIRST")
-------------------------------------------------------------------------------
-This is the *strongest classical multimodal-escape method* against which the
-QBayMic quantum advantage must be measured. The claim the manuscript can make
-hinges entirely on its outcome (claim ladder, REPORT §7 / PROPOSED §T8):
-
-  * If parallel tempering CLOSES the gap to greedy VB  → the advantage is
-    "annealing helps; quantum adds nothing beyond classical tempering"
-    (a clean negative result, an honest paper).
-  * If parallel tempering STILL FAILS where QAVB succeeds → the reliability
-    advantage is genuinely QUANTUM — the headline result.
-
-WHY THIS IS THE RIGHT BASELINE (not "yet another annealer")
------------------------------------------------------------
-The repo already contains a *deterministic*-annealing control (DAVB,
-`DMM_SVVS_DAVB`, s0=0): a single chain on a monotone β cooling schedule. DAVB
-does NOT close the greedy-VB gap (T4), but a referee will object that
-deterministic annealing is the WEAK multimodal-escape method — it cannot
-*reheat* to escape a basin once cooled. The state-of-the-art classical method
-for exactly the "buried multimodal landscape" regime the paper studies is
-**replica exchange / parallel tempering** (Swendsen–Wang 1986, Geyer 1991,
-Earl–Deem 2005): M replicas held at a *fixed* temperature ladder run in
-parallel, with periodic Metropolis swap moves that let a configuration random-
-walk in temperature — hot replicas roam freely across modes, cold replicas
-refine, and swaps shuttle good configurations down to β=1. This is the method
-that *defines* "the strongest classical escape at matched compute".
-
-HOW TEMPERATURE ENTERS THE VB MODEL (fair by construction)
-----------------------------------------------------------
-We do not invent a new energy. The DMM-SVVS QAVB model ALREADY defines a
-temperature-scaled E-step (used by DAVB/QAVB during the β-ramp):
-
-      log r_{ik} ∝ β · ( E[ln π_k] + E[ln p(x_i | k)] )          (β = 1/T)
-
-implemented as `_AnnealedDMMMixin._update_r_classical(X, beta_t)` in
-`DMM_SVVS_Variational_QAVB_v2.py`. β large ⇒ near-hard assignment (cold,
-greedy); β small ⇒ flat responsibilities (hot, explores). Each replica here is
-the SAME `DMM_SVVS_Variational_v2` model with this exact tempered E-step at a
-FIXED β — so PT is "VB, tempered", nothing more. Only the dynamics differ from
-greedy VB (β=1, no swaps), exactly as the QAVB comparison demands.
-
-The swap energy is the VB free energy  E = −ELBO  (the model's own
-`_compute_elbo`). For two adjacent replicas at β_i, β_j with energies E_i, E_j
-the Metropolis replica-exchange acceptance is the standard
-
-      A = min(1, exp( (β_i − β_j)(E_i − E_j) ) ).
-
-MATCHED COMPUTE (the professor's hard constraint)
--------------------------------------------------
-"(M × iterations) = QBayMic evaluations, plus wall-clock." The total number of
-CAVI sweeps (= E-step + M-step energy evaluations) across all replicas is held
-to the quantum method's `max_iter`:
-
-      n_sweeps_per_replica = ceil(compute_budget / M)
-
-so M replicas × n_sweeps_per_replica ≈ compute_budget. The harness
-(`test/T8_parallel_tempering.py`) additionally reports wall-clock so the match
-can be audited on both axes.
-
-OUTPUT / PREDICTION INTERFACE
------------------------------
-After `fit`, the cold replica (β=1) is the inference result: `.predict(X)`
-returns its labels and `.K` its cluster count, drop-in compatible with the
-other QAVB methods. Diagnostics (`.swap_acceptance_`, `.ladder_`, `.best_elbo_`)
-support the ladder-tuning and the matched-compute audit.
-
-DEPENDENCIES: numpy, scikit-learn, DMM_SVVS_Variational_QAVB_v2 (for the
-tempered E-step + ELBO), DMM_SVVS_Variational_v2 (the base VB model).
 """
 from __future__ import annotations
 
@@ -91,19 +22,6 @@ warnings.filterwarnings("ignore")
 # ════════════════════════════════════════════════════════════════════════════
 
 class _TemperedVBReplica(DMM_SVVS_Variational_v2):
-    """
-    One replica of the temperature ladder: a `DMM_SVVS_Variational_v2` whose
-    E-step is run at a FIXED inverse temperature β (NOT a cooling schedule).
-
-    This is the SAME tempered E-step the QAVB model uses during its β-ramp,
-    log r_{ik} ∝ β·(E[ln π_k] + E[ln p(x_i|k)]), so a replica at β=1 is exactly
-    greedy classical VB and a replica at β<1 is a hot, exploratory copy. The
-    M-step, pruning, feature selection and ELBO are inherited unchanged — only
-    the responsibility temperature differs.
-
-    Replicas are driven one CAVI sweep at a time by the PT outer loop via
-    `sweep_once`, between which the outer loop performs Metropolis swap moves.
-    """
 
     def __init__(self, beta, **kwargs):
         super().__init__(**kwargs)
@@ -112,12 +30,7 @@ class _TemperedVBReplica(DMM_SVVS_Variational_v2):
         self._last_free_energy = np.inf
 
     # ── tempered (deterministic-annealing) E-step ──────────────────────────
-    # This is the Rose-1998 / Ueda–Nakano-1998 DAEM responsibility: the
-    # complete-data evidence is raised to the power β,
-    #     r_{ik} ∝ [ π_k · p(x_i|k) ]^β   ⟺  log r_{ik} ∝ β·(E[ln π_k]+E[ll]),
-    # exactly the deterministic-annealing free-energy mechanism the paper's
-    # theory invokes (RGF split-temperature). β=1 ⇒ standard VB E-step; β<1
-    # flattens the assignment landscape (the hot, exploratory replica).
+
     def _tempered_logits(self, X):
         """Return (log_num (N,K), free_energy_density (N,)) at this β."""
         from scipy.special import logsumexp
@@ -140,29 +53,12 @@ class _TemperedVBReplica(DMM_SVVS_Variational_v2):
         The β-TEMPERED variational free energy that this replica minimises:
 
             F_β = −(1/β) Σ_i log Σ_k exp( β·(E[ln π_k] + E[ln p(x_i|k)]) ).
-
-        At β=1 it reduces to the usual (negative) responsibility log-evidence.
-        Used as the per-replica objective for stagnation-driven reseeding (lower
-        is better). The replica-EXCHANGE move instead uses `base_energy` below,
-        which is the common β=1 energy required for a valid swap.
         """
         _, lse = self._tempered_logits(X)
         return float(-(1.0 / max(self.beta, 1e-12)) * lse.sum())
 
     def base_energy(self, X):
-        """
-        The COMMON (β=1) energy U(x) = −Σ_i log Σ_k exp(E[ln π_k]+E[ln p(x_i|k)])
-        of THIS replica's current configuration, evaluated WITHOUT the β power.
-
-        Replica exchange swaps configurations between temperatures, so the
-        Metropolis acceptance must compare the SAME energy function at the two
-        configs (Earl–Deem 2005, eq. 1):
-
-            log A = (β_i − β_j)·( U(x_i) − U(x_j) ).
-
-        Using each replica's own tempered free energy instead would not be a
-        valid swap. (Lower U is better.)
-        """
+        
         from scipy.special import logsumexp
         E_log_pi = self._E_log_pi()
         ll = self._expected_log_lik(X)
@@ -176,24 +72,12 @@ class _TemperedVBReplica(DMM_SVVS_Variational_v2):
         self._last_free_energy = self.tempered_free_energy(X)
 
     def reseed(self, X, random_state):
-        """
-        Re-initialise this replica from a fresh basin (a new k-means seed).
-        Used by the PT loop to keep HOT replicas exploring once they stagnate —
-        the replica-exchange analogue of a Monte-Carlo long jump, and the
-        strongest classical multimodal-escape move available to a mean-field
-        method. Cold replicas are never reseeded (they must refine).
-        """
+        
         self._initialize_parameters(X, random_state)
         self._last_free_energy = self.tempered_free_energy(X)
 
     def sweep_once(self, X, iteration, do_prune):
-        """
-        One CAVI sweep at fixed β: tempered DAEM E-step + full M-step (+ optional
-        pruning). The M-step uses the tempered responsibilities, so at low β the
-        sufficient statistics see the flattened assignment (genuine annealing,
-        not just a softened readout). Returns this replica's β-tempered free
-        energy afterwards. Counts as ONE energy evaluation (matched compute).
-        """
+        
         self.n_iter = iteration
         self._clear_cache()
 
@@ -250,47 +134,6 @@ class _TemperedVBReplica(DMM_SVVS_Variational_v2):
 class DMM_SVVS_ParallelTempering_VB:
     """
     Replica-exchange (parallel-tempering) variational Bayes for DMM-SVVS.
-
-    M replicas of the SAME VB model on a fixed inverse-temperature ladder
-    1 = β_0 > β_1 > … > β_{M−1} (cold → hot). Each PT round advances every
-    replica by `swap_every` CAVI sweeps, then proposes Metropolis swaps between
-    adjacent replicas (alternating even/odd pairs). The cold replica (β=1) is
-    the reported inference result.
-
-    Matched compute (T8): the total CAVI sweeps across all replicas equals
-    `compute_budget` (the quantum method's max_iter):
-        n_sweeps_per_replica = ceil(compute_budget / n_replicas)
-    so n_replicas × n_sweeps_per_replica ≈ compute_budget energy evaluations.
-
-    Parameters
-    ----------
-    compute_budget : int
-        TOTAL CAVI sweeps across all replicas (matched to QAVB max_iter). The
-        per-replica sweep count is derived as ceil(compute_budget/n_replicas).
-    n_replicas : int
-        Number M of temperature rungs on the ladder.
-    beta_min : float
-        Inverse temperature of the hottest replica (β_{M−1}); the ladder is
-        geometric from 1.0 down to beta_min. Smaller ⇒ hotter ⇒ more
-        exploration but lower swap acceptance with its neighbour.
-    ladder : array-like or None
-        Explicit inverse-temperature ladder (overrides beta_min / geometric).
-        Must start at 1.0 (the cold, β=1 reported replica) and decrease.
-    swap_every : int
-        Number of CAVI sweeps per replica between swap-proposal rounds.
-    Shared VB hyperparameters (K_max, nu, selection_prior, prune_threshold,
-    prune_start, prune_every, zeta, eta, xi_1, xi_2, min_clusters) are passed
-    through to every replica IDENTICALLY — this is the fairness guarantee, the
-    same params QAVB/VB use; only the (tempered, swapped) dynamics differ.
-
-    Attributes set after fit
-    ------------------------
-    cold_ : the β=1 replica (the reported inference); K, weights_ proxied from it
-    swap_acceptance_ : (M−1,) per-adjacent-pair acceptance fractions
-    overall_swap_acceptance_ : float, mean over proposed swaps
-    ladder_ : the inverse-temperature ladder actually used
-    best_elbo_ : best ELBO seen on the cold replica across the run
-    n_sweeps_per_replica_, n_energy_evals_ : matched-compute audit
     """
 
     def __init__(self,
@@ -397,11 +240,6 @@ class DMM_SVVS_ParallelTempering_VB:
                   f"{n_sweeps} sweeps/replica ({self.n_energy_evals_} total "
                   f"energy evals; budget {self.compute_budget})")
 
-        # Reseed only HOT replicas (never the cold β=1 one or its nearest cool
-        # neighbour) once their tempered free energy stops improving for this
-        # many consecutive swap rounds. This is the replica-exchange long-jump:
-        # the strongest classical multimodal-escape move a mean-field method
-        # has. Index 0 (and 1) are protected so the cold chain only ever refines.
         STALL_ROUNDS = 3
         reseed_rng = np.random.RandomState(int(rng.randint(0, 2**31 - 1)))
 
@@ -433,9 +271,6 @@ class DMM_SVVS_ParallelTempering_VB:
             # ── Metropolis replica-exchange (alternate even/odd adjacent pairs)
             # Swap acceptance uses the COMMON β=1 energy U at the two configs:
             #   log A = (β_i − β_j)·(U_i − U_j)   (Earl–Deem 2005).
-            # Only swap replicas of EQUAL active K (a configuration cannot be
-            # carried between different cluster counts); unequal-K neighbours
-            # skip the swap this round.
             for m in range(swap_parity, M - 1, 2):
                 bi, bj = ladder[m], ladder[m + 1]
                 swap_attempts[m] += 1
@@ -498,11 +333,6 @@ class DMM_SVVS_ParallelTempering_VB:
             raise RuntimeError("call fit() before predict()")
         return self.cold_.predict(X)
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Ladder auto-tuning to hit the 20–40 % swap-acceptance target
-# ════════════════════════════════════════════════════════════════════════════
-
 def tune_ladder(X,
                 compute_budget,
                 shared,
@@ -513,19 +343,7 @@ def tune_ladder(X,
                 target_hi=0.40,
                 tune_seeds=(0, 1, 2),
                 verbose=True):
-    """
-    Pick the hottest-rung β_min whose mean adjacent swap-acceptance lands in
-    [target_lo, target_hi] (the professor's 20–40 % window). Geometric ladders
-    of `n_replicas` rungs are tried from cool (high β_min) to hot (low β_min);
-    we average acceptance over a few short tuning runs (`tune_seeds`) to damp
-    seed noise. Returns (best_ladder, diagnostics list).
 
-    Rationale: too cool a ladder ⇒ swaps almost always accepted (≈1.0,
-    replicas overlap, no tempering benefit); too hot ⇒ swaps almost always
-    rejected (≈0, replicas decoupled, hot exploration never reaches β=1).
-    20–40 % is the textbook efficient-mixing window (Rathore et al. 2005,
-    Kone–Kofke 2005).
-    """
     if verbose:
         print(f"  [tune] selecting β_min for {n_replicas}-rung ladder, "
               f"target swap acc ∈ [{target_lo:.0%}, {target_hi:.0%}]")
@@ -560,10 +378,6 @@ def tune_ladder(X,
                   f"(β_min={best['beta_min']:.2f}, acc={best['mean_swap_acc']:.2f})")
     return chosen, diagnostics
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Smoke-test
-# ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     import sys
