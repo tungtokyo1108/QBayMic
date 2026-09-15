@@ -3,64 +3,6 @@
 """
 Random Search Hyperparameter Optimisation for DMM_SVVS_PennyLaneQAVB_v2
 =========================================================================
-
-Targets a single model — DMM_SVVS_PennyLaneQAVB_v2 from
-DMM_SVVS_Variational_QAVB_v2 — and maximises ARI against ground-truth
-labels by random search over six clustering-relevant hyperparameters.
-
-The boolean toggle use_trigamma_correction is FIXED to False for the
-entire search (so the second-order delta-method correction is OFF and
-the model uses the parent class's point-estimate expected log-likelihood).
-
-Hyperparameters searched
-------------------------
-  K_max            int      [low, high]          uniform integer
-  nu               float    (0, ∞)               log-uniform float
-  selection_prior  float    (0, 1)               uniform float
-  prune_threshold  float    (0, 1)               log-uniform float
-  tau1             int      [low, high]          uniform integer (quantum phase end)
-  tau2             int      tau1 + delta         uniform integer (thermal phase end)
-
-Hyperparameters held fixed
---------------------------
-  use_trigamma_correction = False   (per-user request)
-  zeta, eta, xi_1, xi_2   = 1.0
-  beta0                   = 30.0   (QAVB initial inverse temperature)
-  s0                      = 1.0    (full quantum start)
-  tol                     = 1e-4
-  max_iter                = 400    (search budget; refit_best uses 600)
-  prune_start             = 10
-  prune_every             = 5
-  min_clusters            = None
-
-Usage
------
-    from random_search_qavb_v2 import random_search, refit_best, print_top_k
-
-    results = random_search(
-        X           = X,
-        true_labels = true_labels,
-        n_trials    = 60,
-        master_seed = 42,
-        verbose     = True,
-    )
-
-    print_top_k(results, top_k=10)
-
-    best_model = refit_best(
-        X           = X,
-        true_labels = true_labels,
-        best_result = results["best_result"],
-        n_restarts  = 5,
-    )
-
-Returns
--------
-random_search() returns a dict with:
-    best_config  : dict  — hyperparameters of the best trial
-    best_result  : dict  — full record of the best trial (ari, nmi, K, ...)
-    all_results  : list  — every trial record sorted by ARI descending
-    model_class  : str   — "PennyLaneQAVB_v2"
 """
 
 import json
@@ -138,16 +80,7 @@ def _sample_config(rng,
                    prune_threshold_range,
                    tau1_range,
                    tau2_delta_range):
-    """
-    Draw one random configuration from the given search ranges.
-
-    tau2 is sampled as tau1 + delta with delta drawn from tau2_delta_range,
-    guaranteeing tau2 > tau1 (thermal phase always follows quantum phase).
-
-    Returns
-    -------
-    dict with keys: K_max, nu, selection_prior, prune_threshold, tau1, tau2
-    """
+    
     K_max           = _sample_int(rng, *K_max_range)
     nu              = _sample_loguniform(rng, *nu_range)
     selection_prior = _sample_uniform(rng, *selection_prior_range)
@@ -171,23 +104,7 @@ def _sample_config(rng,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_trial(X, true_labels, config, trial_seed):
-    """
-    Fit one PennyLaneQAVB_v2 configuration and return ARI, NMI, K, elapsed.
-
-    On any exception (numerical failure, invalid config) the trial returns
-    ARI = NMI = -1 with the error message attached.
-
-    Parameters
-    ----------
-    X            : (N, S) float array
-    true_labels  : (N,)   int array
-    config       : dict   — sampled hyperparameters
-    trial_seed   : int    — random_state for this trial
-
-    Returns
-    -------
-    dict with keys: ari, nmi, K_estimated, elapsed, config, trial_seed, error
-    """
+    
     params = {**FIXED_PARAMS, **config, "random_state": trial_seed}
     t0     = _time.time()
     error  = None
@@ -231,46 +148,7 @@ def random_search(X,
                   tau2_delta_range        = DEFAULT_TAU2_DELTA_RANGE,
                   master_seed             = 42,
                   verbose                 = True):
-    """
-    Random search over DMM_SVVS_PennyLaneQAVB_v2 hyperparameters,
-    maximising ARI.
-
-    use_trigamma_correction is fixed to False throughout the search.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (N, S)
-        Count data matrix.
-    true_labels : np.ndarray, shape (N,)
-        Ground-truth cluster labels for ARI evaluation.
-    n_trials : int
-        Number of random configurations to evaluate.
-    K_max_range : tuple (int_low, int_high)
-        Truncation level range.  Both ends inclusive.
-    nu_range : tuple (float_low, float_high)
-        DP concentration parameter range.  Sampled log-uniformly.
-    selection_prior_range : tuple (float_low, float_high)
-        Initial feature-selection warm-start.  Sampled uniformly.
-    prune_threshold_range : tuple (float_low, float_high)
-        Cluster deletion threshold.  Sampled log-uniformly.
-    tau1_range : tuple (int_low, int_high)
-        Quantum-annealing phase length, in iterations.
-    tau2_delta_range : tuple (int_low, int_high)
-        Additional iterations after tau1 for the thermal-annealing phase.
-        Actual tau2 = tau1 + delta.
-    master_seed : int
-        Seed for the search RNG — makes the entire run reproducible.
-    verbose : bool
-        Print a live per-trial progress table if True.
-
-    Returns
-    -------
-    dict with keys:
-        best_config   : dict  — hyperparameters of the best trial
-        best_result   : dict  — full result record of the best trial
-        all_results   : list  — all trial records sorted by ARI descending
-        model_class   : str   — "PennyLaneQAVB_v2"
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
     master_rng  = np.random.default_rng(int(master_seed))
@@ -357,33 +235,7 @@ def refit_best(X,
                n_restarts   = 5,
                max_iter     = 600,
                verbose      = True):
-    """
-    Re-fit DMM_SVVS_PennyLaneQAVB_v2 using the best configuration found by
-    random_search, running multiple independent restarts and keeping the
-    one with the highest ARI.
-
-    The original trial_seed that produced the best ARI during the search is
-    always used as one of the restart seeds, guaranteeing the search result
-    is reproduced at minimum.
-
-    Parameters
-    ----------
-    X            : np.ndarray, shape (N, S)
-    true_labels  : np.ndarray, shape (N,)
-    best_result  : dict
-        The dict under results["best_result"] returned by random_search().
-        Must contain keys "config" and "trial_seed".
-    n_restarts   : int
-        Total number of independent random restarts.
-    max_iter     : int
-        Maximum CAVI iterations per restart (higher than search budget).
-    verbose      : bool
-
-    Returns
-    -------
-    Fitted DMM_SVVS_PennyLaneQAVB_v2 instance with the highest ARI across
-    all restarts.
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
 
