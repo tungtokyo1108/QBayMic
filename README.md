@@ -35,7 +35,7 @@ git clone <this-repo> && cd QBayMic-main
 pip install -r requirements.txt
 ```
 
-The quantum methods (`ed`, `varqite`, `vqt`) PennyLane (CPU builds are sufficient).
+The quantum methods (`ed`, `varqite`, `vqt`) need PennyLane (CPU builds are sufficient).
 
 ## Quickstart
 
