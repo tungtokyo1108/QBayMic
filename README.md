@@ -35,9 +35,7 @@ git clone <this-repo> && cd QBayMic-main
 pip install -r requirements.txt
 ```
 
-The classical methods (`greedy_vb`, `pt`) need only NumPy/SciPy/scikit-learn.
-The quantum methods (`ed`, `varqite`, `vqt`) additionally use JAX and PennyLane
-(CPU builds are sufficient).
+The quantum methods (`ed`, `varqite`, `vqt`) PennyLane (CPU builds are sufficient).
 
 ## Quickstart
 
