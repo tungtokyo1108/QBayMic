@@ -1,70 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DMM-SVVS VQT QAVB — JAX + JIT + vmap + pmap (CPU-parallel) Variant (v4_2fast)
+DMM-SVVS VQT QAVB (CPU-parallel) Variant 
 =============================================================================
-
-v4_2 ported the VarQITE JAX template (v3_1) to the VQT free-energy method:
-one jitted, vmapped, lax.scanned Adam kernel over the whole sample batch,
-with jax.grad replacing parameter-shift. That removed the Python interpreter
-overhead but left ONE bottleneck untouched — the same one v3_1 hit:
-
-    JAX's CPU backend exposes a SINGLE device by default, so jax.vmap runs the
-    entire N-sample batch on ~one busy thread. On a many-core box htop shows
-    one core pegged and the rest idle; the embarrassingly-parallel sample loop
-    never spreads across cores.
-
-v4_2fast applies the exact fix v3_1 uses to reach ~all-core utilisation:
-shard the sample batch across multiple XLA host devices with
-
-    jax.pmap(jax.vmap(adam_trajectory))
-
-so each device runs a contiguous shard of the N samples truly in parallel.
-This is a pure-systems change — the Adam free-energy minimisation, the static
-Pauli basis, the softmax categorical mixture, the readout, and EVERY numeric
-result are identical to v4_2. Only the device map differs.
-
-What changes vs v4_2
---------------------
-  • Device count is chosen at MODULE IMPORT (XLA fixes the host-device pool
-    once, at first JAX init; it cannot grow afterwards):
-        min(os.cpu_count() // 2, 32),  or env V4_2_CPU_DEVICES  ("1" disables).
-  • A `cpu_parallel` flag ("auto" | True | False) chooses whether to USE those
-    devices. "auto" shards once the batch is large enough to amortise the pmap
-    dispatch (>= cpu_parallel_min_batch AND > 2·n_devices rows).
-  • The per-sample Adam kernel is additionally compiled as pmap(vmap(...)) and
-    the batch is padded to a multiple of n_devices, sharded (D, per, …), run,
-    and unpadded — the v3_1 `_run_kernels` pattern, adapted to VQT's TWO
-    parameter arrays (θ ansatz + φ categorical logits).
-
-What is unchanged vs v4_2 (verified numerically, ~1e-12)
--------------------------------------------------------
-  • free_energy / jax.grad / Adam scan / softmax mixture / readout
-  • static Pauli enumeration, Walsh–Hadamard coefficients, phantom padding
-  • warm-start carry (θ_warm, φ_warm), dedup (Layer-C), JIT-warmup accounting
-  • update_strategy masks (joint / alternating / phi_first)
-
-Amdahl note (same as v3_1)
---------------------------
-pmap accelerates ONLY the VQT E-step. The SVVS M-step, trigamma E-LL, k-means
-dedup and pruning stay single-threaded NumPy, so a full fit will not peg every
-core — the realised speedup grows as the E-step dominates (larger N, more
-n_vqt_steps, deeper ansatz, larger K).
-
-Use
----
-    from DMM_SVVS_Variational_QAVB_v4_2fast import DMM_SVVS_VQT_QAVB_JAX_Fast
-    m = DMM_SVVS_VQT_QAVB_JAX_Fast(
-        K_max=4, beta0=5.0, s0=1.0, tau1=8, tau2=18,
-        ansatz_depth=2, n_vqt_steps=40,
-        cpu_parallel="auto",          # shard the sample batch across cores
-        dedup_n_clusters=None,
-    )
-    m.fit(X)
-
-    # to control the shard count:
-    #   V4_2_CPU_DEVICES=16 python your_script.py    # 16 shards
-    #   V4_2_CPU_DEVICES=1  python your_script.py    # disable (= v4_2)
 """
 from __future__ import annotations
 
@@ -74,21 +12,8 @@ from time import time
 
 import numpy as np
 
-# Force 64-bit before JAX is touched — quantum amplitudes need it.
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 
-# ── CPU multi-device setup (MUST happen before JAX initialises) ────────────
-#
-# Identical mechanism to v3_1: XLA creates the host-platform device pool ONCE,
-# at first JAX import, from the flag below; it cannot be changed afterwards.
-# We choose the shard count HERE, at module import, before anything (including
-# the v4_2 base class chain) touches jax.
-#
-# Count resolution (first match wins):
-#   1. env V4_2_CPU_DEVICES   (explicit override; "1" disables sharding)
-#   2. min(os.cpu_count() // 2, 32)   — efficient regime for the tiny per-
-#      sample VQT kernel; past ~32 shards dispatch overhead flattens returns.
-# Set V4_2_CPU_DEVICES=1 to recover the exact single-device v4_2 behaviour.
 def _resolve_cpu_device_count() -> int:
     env = os.environ.get("V4_2_CPU_DEVICES")
     if env is not None:
@@ -102,8 +27,7 @@ def _resolve_cpu_device_count() -> int:
 
 _V4_2_CPU_DEVICES = _resolve_cpu_device_count()
 if _V4_2_CPU_DEVICES > 1:
-    # Only append; never clobber a user-provided XLA_FLAGS, and don't override
-    # an existing device-count flag if the user already set one.
+
     _flags = os.environ.get("XLA_FLAGS", "")
     if "xla_force_host_platform_device_count" not in _flags:
         os.environ["XLA_FLAGS"] = (
@@ -115,9 +39,6 @@ _here = os.path.dirname(os.path.abspath(__file__))
 if _here not in sys.path:
     sys.path.insert(0, _here)
 
-# Import AFTER the XLA flag is set so the device pool is created with the right
-# size on first JAX init. v4_2 imports JAX lazily (in _init_pennylane_device),
-# so this ordering is what makes the shard count take effect.
 from DMM_SVVS_Variational_v2 import NumericalStability  # noqa: E402
 from DMM_SVVS_Variational_QAVB_v4_2 import (  # noqa: E402
     DMM_SVVS_VQT_QAVB_JAX,
@@ -126,27 +47,7 @@ from DMM_SVVS_Variational_QAVB_v4_2 import (  # noqa: E402
 
 class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
     """
-    CPU-parallel VQT QAVB (v4_2fast).
-
-    Subclasses the v4_2 JAX VQT model and adds jax.pmap sharding of the
-    per-sample Adam free-energy kernel across XLA host devices, so the
-    embarrassingly-parallel sample batch spreads across CPU cores. Every
-    numeric result is identical to v4_2; only the device map changes.
-
-    Parameters added on top of v4_2
-    --------------------------------
-    cpu_parallel : "auto" | bool, default "auto"
-        Whether to shard the sample batch across the host devices created at
-        module import (see V4_2_CPU_DEVICES).
-          "auto" -> shard when >1 device exists AND the batch is large enough
-                    to amortise pmap dispatch.
-          True   -> always shard when >1 device exists.
-          False  -> force the single-device vmap path (== v4_2).
-        The number of devices is FIXED at import; this flag only chooses
-        whether to use them.
-    cpu_parallel_min_batch : int, default 64
-        Smallest batch worth sharding in "auto" mode (below this, pmap
-        dispatch + padding overhead outweighs the parallelism).
+    CPU-parallel VQT QAVB.
     """
 
     def __init__(
@@ -169,34 +70,16 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
     # ── Record device count, then build kernels (super builds vmap ones) ──
 
     def _init_pennylane_device(self):
-        # super() imports jax, sets self._jax/_jnp, builds the static Pauli
-        # basis and the single-device vmap kernels via _build_jax_kernels
-        # (which we override below to ALSO build the pmap kernels).
+
         super()._init_pennylane_device()
 
     def _build_jax_kernels(self):
-        # Build all the single-device vmap/jit kernels exactly as v4_2 does.
+
         super()._build_jax_kernels()
 
         jax = self._jax
         self._n_devices = max(1, jax.local_device_count())
 
-        # Reconstruct the SAME trajectory/readout/free_energy closures v4_2
-        # built, but wrapped in pmap(vmap(...)). Rather than duplicate the
-        # (long) closure bodies, we wrap the already-vmapped+jitted kernels'
-        # underlying functions. The cleanest, drift-proof way is to rebuild
-        # the pmap kernels from the vmapped functions captured below.
-        #
-        # v4_2's _build_jax_kernels assigns:
-        #   self._batched_kernel = jit(vmap(trajectory, (0,0,0,None)))
-        #   self._probs_batched  = jit(vmap(readout,    (0,0)))
-        #   self._F_batched      = jit(vmap(free_energy,(0,0,0,None)))
-        # We re-derive pmap(vmap(...)) from the same per-sample functions by
-        # re-extracting them. Since those locals aren't stored, we rebuild the
-        # pmap kernels by composing pmap over the EXISTING vmapped callables:
-        # pmap maps the device axis, the inner jitted-vmap maps the per-shard
-        # sample axis. This composes correctly and keeps ONE source of truth
-        # for the kernel math (the v4_2 closures).
         if self._n_devices > 1:
             # _batched_kernel etc. are jit(vmap(f)). pmap over them maps the
             # leading device axis; the inner vmap maps the per-shard rows.
@@ -211,8 +94,6 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
             self._pmap_probs = None
             self._pmap_F = None
 
-    # ── Kernel dispatch: pmap over CPU shards, or single-device vmap ──────
-
     def _use_pmap(self, B: int) -> bool:
         """Decide whether to shard a batch of size B across devices."""
         if self._n_devices <= 1 or self._pmap_kernel is None:
@@ -226,14 +107,7 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
         return True   # cpu_parallel is True
 
     def _run_vqt_kernels(self, theta0, phi0, C_mat, beta_t):
-        """
-        Evaluate (theta_final, phi_final, probs, F) for the FULL batch.
-
-        Routes through jax.pmap (true multi-core over sample shards) when
-        _use_pmap is satisfied, else the single-device vmap kernel chunked by
-        sample_batch_size. Results are identical either way (same kernel, just
-        a different device map) — verified to ~1e-12.
-        """
+        
         jnp = self._jnp
         B = theta0.shape[0]
 
@@ -291,17 +165,7 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
     # ── Batched VQT routed through the pmap-aware dispatcher ──────────────
 
     def _vqt_batch(self, D_block: np.ndarray, beta_t: float, s_t: float):
-        """
-        Same contract as v4_2._vqt_batch, but the kernel execution goes
-        through _run_vqt_kernels (pmap over CPU shards when worthwhile).
-
-        Returns
-        -------
-        r : (B, K) responsibilities (clip+renormalise on the K-block).
-        theta_final : (B, n_params)  for warm-start carry.
-        phi_final   : (B, K_pad)     for warm-start carry.
-        F_final     : (B,)           final per-sample free energy.
-        """
+        
         EPS = NumericalStability.EPS
         B = D_block.shape[0]
 
@@ -319,7 +183,7 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
     #
     # VQT differs from VarQITE in what the "state" is. VarQITE prepares a PURE
     # statevector on 2·n_sys+1 wires (system + ancilla + aux). VQT prepares a
-    # MIXED state on the n_sys system qubits ONLY:
+    # MIXED state on the n_sys system qubits:
     #
     #     ρ(θ, φ) = Σ_x p_φ(x) · U(θ)|x⟩⟨x|U(θ)† ,   p_φ = softmax(φ).
     #
@@ -423,12 +287,6 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
     def visualize_optimized_ansatz(self, d_i, beta_t=None, s_t=0.0,
                                    out_path="v4_2_optimized_bloch.png",
                                    title=None, show=False):
-        """
-        Render the OPTIMIZED-ansatz output for one energy row d_i as a row of
-        per-qubit Bloch spheres (system qubits) plus a bar chart of the readout
-        responsibilities. Mirrors the VarQITE visualiser, adapted for VQT's
-        system-only mixed state. Saves a PNG to `out_path` and returns it.
-        """
         try:
             import matplotlib
             if not show:
@@ -659,11 +517,6 @@ class DMM_SVVS_VQT_QAVB_JAX_Fast(DMM_SVVS_VQT_QAVB_JAX):
                 if (self._n_devices > 1 and self.cpu_parallel is not False)
                 else "single-dev")
         return base
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Smoke + benchmark: v4_2 (single-device) vs v4_2fast (pmap), equal results
-# ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
