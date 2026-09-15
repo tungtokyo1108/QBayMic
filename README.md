@@ -2,7 +2,7 @@
 <table border="0">
   <tr>
     <td>
-      <img src="Logo.png" alt="QBayMic Logo" width="300" valign="middle">
+      <img src="Logo.png" alt="QBayMic Logo" width="320" valign="middle">
     </td>
     <td>
       <h1>QBayMic — Quantum Bayesian Microbiome</h1>
@@ -14,9 +14,7 @@
 # QBayMic — Quantum Bayesian clustering of microbiome count data
 
 QBayMic fits a **Dirichlet–multinomial mixture with stochastic variable
-selection** (DMM-SVVS) to microbiome count data, and lets you run the E-step with
-either a **classical** or a **quantum** engine. A barrier diagnostic, the *signal
-fraction* **σ**, predicts *before* clustering whether the quantum E-step will
+selection** (DMM-SVVS) to microbiome count data, and lets you run the E-step with a **quantum** engine. A barrier diagnostic, the *signal fraction* **σ**, predicts *before* clustering whether the quantum E-step will
 provide an advantage.
 
 All methods share one variational objective and one scikit-learn-style
@@ -24,9 +22,6 @@ interface — they differ only in how the E-step responsibilities are computed.
 
 | method       | E-step                                        | type                |
 |--------------|-----------------------------------------------|---------------------|
-| `greedy_vb`  | coordinate-ascent variational Bayes           | classical           |
-| `pt`         | parallel-tempering VB (multi-temperature)     | classical           |
-| `davb`       | deterministic annealing VB (`s0=0` control)   | classical control   |
 | `ed`         | exact quantum Gibbs E-step (diagonalisation)  | quantum (exact)     |
 | `varqite`    | variational imaginary-time evolution          | quantum (circuit)   |
 | `vqt`        | variational quantum thermalizer               | quantum (circuit)   |
@@ -40,7 +35,7 @@ pip install -r requirements.txt
 
 The classical methods (`greedy_vb`, `pt`) need only NumPy/SciPy/scikit-learn.
 The quantum methods (`ed`, `varqite`, `vqt`) additionally use JAX and PennyLane
-(CPU builds are sufficient — **no GPU required**).
+(CPU builds are sufficient).
 
 ## Quickstart
 
@@ -75,12 +70,6 @@ separation (rather than finite-sample noise). It predicts the regime:
 | ≲ 0.20       | unrecoverable     | no method succeeds                           |
 | ≈ 0.25–0.45  | **advantage band**| the quantum E-step separates from classical  |
 | ≳ 0.45       | signal-dominated  | all methods succeed (small quantum margin)   |
-
-- `signal_fraction(...)` — **exact** σ for a synthetic configuration.
-- `signal_fraction_estimate(X, labels)` — σ **estimated from real data** and a
-  (possibly approximate) partition, by debiasing the empirical barrier with a
-  within-group split-half sampling null. Use a fast partition (k-means on
-  relative abundances, or one `greedy_vb` pass) when true labels are unknown.
 
 ## Examples
 
