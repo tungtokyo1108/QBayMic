@@ -1,102 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-DMM-SVVS VQT QAVB — JAX + JIT + vmap Variant (v4_2)
+DMM-SVVS VQT QAVB 
 =====================================================
-
-The VQT counterpart of v3_1. Where v3_1 took the supervisor's
-"JAX + vmap" path for *VarQITE* (McLachlan imaginary-time evolution),
-v4_2 takes the same path for the *Variational Quantum Thermalizer*
-(direct free-energy minimisation of v4).
-
-Algorithmically IDENTICAL to v4 / v4_1: the same hardware-efficient
-ansatz U(θ) on n_sys system qubits, the same categorical mixture
-p_φ(x) = softmax(φ), the same free energy F = ⟨H⟩ − T·S, the same
-Walsh–Hadamard diagonal decomposition, the same transverse-field /
-cyclic-shift mixers, the same per-sample shift/scale/phantom-padding,
-and the same clip+renormalise readout r = diag(ρ)|_K. v4_2 changes only
-*how the inner loop is executed*, not what it computes — verified against
-v4's PennyLane primitives and v4_1's dense engine to ~1e-15 (machine
-precision per step) in the regression at the bottom of this file.
-
-────────────────────────────────────────────────────────────────────────────
-Why VQT maps onto JAX even more cleanly than VarQITE (v3_1)
-────────────────────────────────────────────────────────────────────────────
-v3_1's dominant win was replacing `qml.metric_tensor` (44% of VarQITE's
-runtime) with a hand-rolled Fubini–Study metric from the statevector
-Jacobian. VQT has **no metric tensor at all** — its inner loop is plain
-Adam on (θ, φ). So the v3_1 trick that matters carries over directly, and
-one extra VQT-specific accelerator appears:
-
-  • v3_1 §3.1  parameters-vs-structure
-        A fixed Pauli basis {P_p} is enumerated ONCE (the K_pad diagonal
-        Walsh–Hadamard Z-strings + the n_sys mixer strings). Per sample
-        only a COEFFICIENT VECTOR c changes. The circuit structure is then
-        static, so the energy QNode traces once under jax.jit.  ── ported.
-
-  • v3_1 §3.2  carry state, don't mutate dicts
-        Warm-start is a carried (N, n_params) / (N, K_pad) JAX array, not a
-        Python dict; the inner loop is a lax.scan whose carry is
-        (θ, φ, Adam moments).  ── ported.
-
-  • NEW for VQT  jax.grad replaces parameter-shift entirely
-        v4 / v4_1 compute dF/dθ with 2·n_params energy evaluations
-        (parameter shift). Under JAX, ONE reverse-mode jax.grad(F) call
-        returns the FULL θ-gradient AND the φ-gradient together, at roughly
-        the cost of a single forward pass — no 2·n_params scaling. This is
-        the decisive VQT-specific speedup on top of vmap/JIT, and it is
-        exact (matches param-shift to 1e-16, verified).
-
-The per-basis-state energies VQT needs — E_x(θ) = ⟨x|U†HU|x⟩ for ALL x —
-are obtained from a single static QNode that prepares |x⟩, applies the
-ansatz, and returns the list of static-Pauli expvals; vmapping that QNode
-over x ∈ {0..K_pad-1} gives the full energy vector. Everything downstream
-(F, jax.grad(F), the Adam scan) is then pure JAX.
-
-────────────────────────────────────────────────────────────────────────────
-The kernel: jit(vmap(scan(adam_step)))
-────────────────────────────────────────────────────────────────────────────
-  step carry  : (θ, φ, m_θ, v_θ, m_φ, v_φ)
-  step body   : g_θ, g_φ = jax.grad(F)(θ, φ, c, β);  two Adam updates
-  scan length : n_vqt_steps   (fixed → single compile)
-  vmap axes   : (θ0[i], φ0[i], c[i])  over the N-sample (or centroid) batch
-  jit         : one trace; recompiled only when the static signature
-                (n_sys, n_params, P, n_steps, update_strategy) changes.
-
-Layer-2 early stopping is intentionally NOT ported — identical rationale
-to v3_1: a data-dependent break inside lax.scan forces a dynamic trip
-count and defeats the single-compile/vmap win. With JIT+vmap the inner
-loop is so cheap that running all n_vqt_steps beats Python-level readout
-checks. Layer-C (energy-vector dedup) IS preserved and batches the
-centroid VQT passes through the same vmap kernel.
-
-────────────────────────────────────────────────────────────────────────────
-Expected speedup
-────────────────────────────────────────────────────────────────────────────
-v4_1's dense engine already removed v4's per-state QNode overhead. v4_2
-adds, multiplicatively: (a) jax.grad in place of 2·n_params param-shift
-energy builds, (b) vmap across all N samples at once instead of a Python
-per-sample loop, (c) JIT removing interpreter overhead from the Adam
-scan. Realised numbers print in __main__.
-
-Use
----
-    from DMM_SVVS_Variational_QAVB_v4_2 import DMM_SVVS_VQT_QAVB_JAX
-    m = DMM_SVVS_VQT_QAVB_JAX(
-        K_max=4, beta0=30.0, s0=1.0, tau1=100, tau2=200,
-        ansatz_depth=2, n_vqt_steps=40,
-        learning_rate=0.05, learning_rate_phi=0.1,
-        update_strategy="joint",
-        dedup_n_clusters=None,        # Layer-C still available
-        sample_batch_size=None,       # None = one vmap over all N; int = chunk
-    )
-    m.fit(X)
-
-References
-----------
-  Verdon G, et al. arXiv:1910.02071 (2019)  — VQT.
-  v3_1 (this repo)                           — the JAX+JIT+vmap template.
-  v4 / v4_1 (this repo)                      — the VQT algorithm + dense engine.
 """
 from __future__ import annotations
 
@@ -107,8 +13,6 @@ from time import time
 import numpy as np
 from sklearn.cluster import MiniBatchKMeans
 
-# Force 64-bit before JAX is touched — quantum amplitudes need it, and the
-# v4 reference math is float64. (Same as v3_1.)
 os.environ.setdefault("JAX_ENABLE_X64", "1")
 
 _here = os.path.dirname(os.path.abspath(__file__))
@@ -126,49 +30,6 @@ from DMM_SVVS_Variational_QAVB_v4_1 import (  # noqa: E402
 
 
 class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
-    """
-    JAX + JIT + vmap VQT QAVB (v4_2).
-
-    Inherits the QAVB outer loop, schedule, trigamma E-LL, dedup machinery
-    and reporting from the v4_1 class; overrides device init and the E-step
-    so the per-sample free-energy minimisation runs as a single jitted,
-    vmapped, lax.scanned Adam kernel over the whole sample batch.
-
-    Parameters added on top of v4_1
-    --------------------------------
-    sample_batch_size : int or None, default None
-        Chunk size for the vmap over samples. None -> a single vmap over all
-        N samples (lowest overhead). For very large N on a small machine,
-        set e.g. 256 to cap peak memory; correctness is unchanged.
-    jit_warmup : bool, default True
-        Trigger one throwaway compile of the kernel at the first E-step so
-        the compile latency is paid once and reported separately, not folded
-        into the first iteration's wall time.
-
-    Parameters inherited but RE-INTERPRETED
-    ----------------------------------------
-    free_energy_tol / r_early_stop_tol : ignored in v4_2
-        Data-dependent early breaks defeat single-compile vmap (v3_1 §
-        "Layer-2 NOT ported"). Left in the signature for API compatibility;
-        a note is printed if either is set. The inner loop always runs all
-        n_vqt_steps.
-    compute_backend : forced to "jax"
-        v4_2 is the JAX path. The "numpy"/"qnode" engines of v4_1 remain
-        available by instantiating the v4_1 class directly.
-    device_name : forced to "default.qubit" (interface="jax")
-        The canonical jax.jit statevector target in PennyLane 0.44; at
-        n_sys ≤ 4 (K ≤ 16) the statevector is tiny so a C++ backend buys
-        nothing once JIT removes interpreter overhead.
-
-    update_strategy
-        "joint" / "alternating" / "phi_first" are all supported and baked
-        into the scanned step via static masks (no Python branching inside
-        the compiled loop). n_phi_warmup is honoured for "phi_first".
-    enumerate_basis
-        v4_2 always enumerates the K_pad basis states for the energy vector
-        (the dense/JAX path makes enumeration free); the Monte-Carlo path of
-        v4 is not used. enumerate_basis is ignored.
-    """
 
     def __init__(
         self,
@@ -231,13 +92,9 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
         self._jax = jax
         self._jnp = jnp
 
-        # VQT register layout: system qubits only (no ancilla, no aux wire).
         self.n_sys = max(1, int(np.ceil(np.log2(max(self.K, 2)))))
         self.K_pad = 1 << self.n_sys
 
-        # K-adaptive expressivity floor (depth + steps) — see the v4 base
-        # class. Critical fix for the high-s_t Gibbs-fidelity gap; raises
-        # depth to ≥ n_sys+1 and steps to ≥ ~100 unless the user opted out.
         self._apply_adaptive_expressivity()
 
         self.n_tot = self.n_sys
@@ -246,7 +103,6 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
         self._dev = qml.device("default.qubit", wires=self.n_tot)
         self._active_device = "default.qubit (jax)"
 
-        # Cached CNOT layer (used by the v4_1 dense engine; harmless here).
         from DMM_SVVS_Variational_QAVB_v4_1 import _build_cnot_layer
         self._cnot_layer = _build_cnot_layer(self.n_sys)
 
@@ -264,8 +120,6 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
 
         diag_ops = [z_string_op(z) for z in range(self.K_pad)]
 
-        # Mixer block. transverse_field -> per-qubit X strings (+s_t each,
-        # matching v4's _build_hamiltonian). cyclic_shift -> dense decomposition.
         self._dense_mix_static_c = None
         if self.mixer == "transverse_field":
             mixer_ops = [qml.PauliX(q) for q in range(n_sys)]
@@ -283,9 +137,6 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
         self._n_mix  = len(mixer_ops)
         self._P      = len(self._all_pauli_ops)
 
-        # Walsh–Hadamard sign matrix (K_pad × K_pad), divided by K_pad, so the
-        # diagonal coefficient block is a single matmul. MSB-first bit order,
-        # matching v2/v4's _diagonal_to_pauli_z_strings.
         Kp = self.K_pad
         Hsign = np.empty((Kp, Kp), dtype=np.float64)
         for z in range(Kp):
@@ -328,7 +179,7 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
         @qml.qnode(self._dev, interface="jax")
         def _expvals_in_state(th, x):
             # Prepare |x⟩ (wire 0 = MSB), apply the ansatz, return static
-            # Pauli expvals. x is a Python int baked into each vmapped trace.
+            # Pauli expvals. 
             for q in range(n_sys):
                 if (x >> (n_sys - 1 - q)) & 1:
                     qml.PauliX(wires=q)
@@ -358,9 +209,7 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
 
         grad_F = jax.grad(free_energy, argnums=(0, 1))
 
-        # Static per-step masks for the three update strategies. Masks are
-        # length-n_steps boolean arrays baked into the compiled kernel, so the
-        # scan body has NO Python/data branching.
+        # Static per-step masks for the three update strategies. 
         steps = np.arange(1, n_steps + 1)
         if strategy == "joint":
             mask_th = np.ones(n_steps, dtype=bool)
@@ -440,13 +289,7 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
     # ── §3.1 per-sample coefficient vector (vectorised, JAX) ──────────────
 
     def _coefficients_batch(self, D_block: np.ndarray, s_t: float):
-        """
-        Map a batch of raw per-sample energy rows D_block (B, K) to the
-        coefficient matrix C (B, P) indexed by the static Pauli basis,
-        applying v4's EXACT per-sample shift/scale/phantom-padding.
-
-        Returns a JAX array (B, P).
-        """
+        
         jnp = self._jnp
         K = self.K
         Kp = self.K_pad
@@ -498,17 +341,7 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
     # ── Batched VQT over a set of energy rows (samples or centroids) ──────
 
     def _vqt_batch(self, D_block: np.ndarray, beta_t: float, s_t: float):
-        """
-        Run the full Adam free-energy minimisation for a batch of energy rows
-        in one jitted vmap call (chunked by sample_batch_size if set).
-
-        Returns
-        -------
-        r : (B, K) responsibilities (clip+renormalise on the K-block, v4).
-        theta_final : (B, n_params)  for warm-start carry.
-        phi_final   : (B, K_pad)     for warm-start carry.
-        F_final     : (B,)           final per-sample free energy.
-        """
+        
         jnp = self._jnp
         EPS = NumericalStability.EPS
         B = D_block.shape[0]
@@ -544,8 +377,7 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
 
     def _compute_r_annealed(self, X: np.ndarray, beta_t: float,
                             s_t: float) -> np.ndarray:
-        # Recompile if the static signature changed (pruning K, or a knob
-        # was mutated between fits).
+        
         sig = (self.n_sys, self.n_params, self._P,
                max(int(self.n_vqt_steps), 1),
                self.update_strategy, float(self.learning_rate),
@@ -661,10 +493,6 @@ class DMM_SVVS_VQT_QAVB_JAX(DMM_SVVS_VQT_QAVB_Fast):
         return base
 
 
-# ════════════════════════════════════════════════════════════════════════════
-# Verification: JAX-engine Gibbs check (mirrors v4_1.verify_vqt_gibbs_fast)
-# ════════════════════════════════════════════════════════════════════════════
-
 def verify_vqt_gibbs_jax(
     K: int = 4,
     beta: float = 5.0,
@@ -677,12 +505,7 @@ def verify_vqt_gibbs_jax(
     mixer: str = "transverse_field",
     random_state: int = 0,
 ):
-    """Level-0 + Level-1 sanity check for the v4_2 JAX engine.
-
-    Runs the jitted batched kernel on a single energy row and compares the
-    VQT free energy and the K-block trace distance against the classical
-    Gibbs state from expm.
-    """
+    
     rng = np.random.default_rng(random_state)
     d_raw = rng.standard_normal(K) * 2.0
 
@@ -764,10 +587,6 @@ def verify_vqt_gibbs_jax(
         "F_exact":          F_exact,
     }
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# Regression + benchmark:  v4_2 (JAX) vs v4_1 (dense NumPy) vs v4 (QNode)
-# ════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     if hasattr(sys.stdout, "reconfigure"):
