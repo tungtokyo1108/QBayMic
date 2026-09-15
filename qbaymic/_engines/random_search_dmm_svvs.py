@@ -95,24 +95,7 @@ def _sample_config(rng,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_trial(X, true_labels, config, trial_seed):
-    """
-    Fit one model configuration and return ARI, NMI, K, elapsed time.
-
-    The trial_seed is passed as random_state so each trial is independently
-    reproducible.  On any exception (numerical failure, invalid config) the
-    trial returns ARI = NMI = -1 and records the error message.
-
-    Parameters
-    ----------
-    X            : (N, S) float array
-    true_labels  : (N,)   int array
-    config       : dict   — sampled hyperparameters
-    trial_seed   : int    — random_state for this trial
-
-    Returns
-    -------
-    dict with keys: ari, nmi, K_estimated, elapsed, config, trial_seed, error
-    """
+    
     params = {**FIXED_PARAMS, **config, "random_state": trial_seed}
     t0     = _time.time()
     error  = None
@@ -154,43 +137,7 @@ def random_search(X,
                   prune_threshold_range = DEFAULT_PRUNE_THRESHOLD_RANGE,
                   master_seed           = 42,
                   verbose               = True):
-    """
-    Random search over DMM_SVVS_Variational_v2 hyperparameters,
-    maximising Adjusted Rand Index (ARI) against ground-truth labels.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (N, S)
-        Count data matrix (e.g. OTU counts).
-    true_labels : np.ndarray, shape (N,)
-        Ground-truth cluster labels for ARI evaluation.
-    n_trials : int
-        Number of random configurations to evaluate.
-    K_max_range : tuple (int_low, int_high)
-        Search range for the truncation level.  Both ends are inclusive.
-        Example: (3, 15)
-    nu_range : tuple (float_low, float_high)
-        Search range for the DP concentration parameter nu > 0.
-        Sampled log-uniformly so that small values are well-explored.
-        Example: (0.01, 2.0)
-    selection_prior_range : tuple (float_low, float_high)
-        Search range for the f warm-start value in (0, 1).
-        Sampled uniformly.  Example: (0.05, 0.95)
-    prune_threshold_range : tuple (float_low, float_high)
-        Search range for the stick-weight deletion threshold.
-        Sampled log-uniformly.  Example: (1e-4, 0.1)
-    master_seed : int
-        Seed for the search RNG — makes the entire run reproducible.
-    verbose : bool
-        Print a live per-trial progress table if True.
-
-    Returns
-    -------
-    dict with keys:
-        best_config  : dict  — hyperparameters of the best trial
-        best_result  : dict  — full result record of the best trial
-        all_results  : list  — all trial records sorted by ARI descending
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
     master_rng  = np.random.default_rng(int(master_seed))
@@ -270,34 +217,7 @@ def refit_best(X,
                n_restarts  = 5,
                max_iter    = 500,
                verbose     = True):
-    """
-    Re-fit the model using the best configuration found by random_search,
-    running multiple independent restarts and keeping the one with the
-    highest ARI.
-
-    The original trial_seed that produced the best ARI during the search is
-    always used as one of the restart seeds, guaranteeing the search result
-    is reproduced at minimum.
-
-    Parameters
-    ----------
-    X            : np.ndarray, shape (N, S)
-    true_labels  : np.ndarray, shape (N,)
-    best_result  : dict
-        The dict under results["best_result"] returned by random_search().
-        Must contain keys "config" and "trial_seed".
-    n_restarts   : int
-        Total number of independent random restarts.
-        The original trial seed counts as the first restart.
-    max_iter     : int
-        Maximum CAVI iterations for each restart.
-        Higher than the search budget (default 500) for a more refined fit.
-    verbose      : bool
-
-    Returns
-    -------
-    Fitted DMM_SVVS_Variational_v2 model with the highest ARI.
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
 
