@@ -1,3 +1,16 @@
+
+<table border="0">
+  <tr>
+    <td>
+      <img src="Logo.png" alt="QBayMic Logo" width="450" valign="middle">
+    </td>
+    <td>
+      <h1>QBayMic — Quantum Bayesian Microbiome</h1>
+      <h3>Dang, T., Lysenko, A., & Tsunoda, T. (2026). bioRxiv, 2026-09. doi:a</h3>
+    </td>
+  </tr>
+</table>
+
 # QBayMic — Quantum Bayesian clustering of microbiome count data
 
 QBayMic fits a **Dirichlet–multinomial mixture with stochastic variable
