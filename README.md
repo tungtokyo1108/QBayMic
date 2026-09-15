@@ -2,7 +2,7 @@
 <table border="0">
   <tr>
     <td>
-      <img src="Logo.png" alt="QBayMic Logo" width="320" valign="middle">
+      <img src="Logo.png" alt="QBayMic Logo" width="300" valign="middle">
     </td>
     <td>
       <h1>QBayMic — Quantum Bayesian Microbiome</h1>
@@ -13,7 +13,7 @@
 
 ## The workflow of QBayMic
 
-<img src="QBayMic_method.png" width="1000" height="500">
+<img src="QBayMic_method.png" width="1000" height="700">
 
 QBayMic fits a **Dirichlet–multinomial mixture with stochastic variable
 selection** (DMM-SVVS) to microbiome count data, and lets you run the E-step with a **quantum** engine. A barrier diagnostic, the *signal fraction* **σ**, predicts *before* clustering whether the quantum E-step will
