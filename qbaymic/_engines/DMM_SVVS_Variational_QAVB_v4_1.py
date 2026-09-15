@@ -5,94 +5,6 @@ DMM-SVVS VQT QAVB — Performance-Optimised Variant (v4_1)
 ==========================================================
 
 Speeds up the Variational Quantum Thermalizer E-step of v4
-(`DMM_SVVS_VQT_QAVB`) **without changing the algorithm**. Every result
-produced by v4_1 with `compute_backend="numpy"` matches v4's PennyLane
-path to machine precision (verified in the regression at the bottom of
-this file). The optimisation is purely a *systems / linear-algebra*
-rewrite of the inner loop, in the same spirit as v3_fast did for VarQITE.
-
-Where v4 spends its time
-------------------------
-v4's `_vqt_responsibility` calls a fresh PennyLane QNode once per
-computational-basis state, for the energy AND for every parameter-shift
-evaluation:
-
-    energy           : K_pad QNode calls          per inner step
-    θ-gradient       : 2·n_params·K_pad QNode calls per inner step
-    readout          : K_pad QNode calls          per early-stop check
-
-For K=4 (n_params=12, K_pad=4) that is ~100 QNode dispatches *per inner
-step*; for K=16 it is ~1000. Each dispatch pays autograd-tracing and
-device-construction overhead that dwarfs the actual 2^n_sys × 2^n_sys
-linear algebra at these sizes. This is the VQT analogue of the v3_fast
-cProfile finding ("self-time dominated by autograd tracer").
-
-The v4_1 idea — exploit VQT's structure
----------------------------------------
-VQT prepares  ρ(θ,φ) = Σ_x p_φ(x)·U(θ)|x⟩⟨x|U(θ)†.  Everything the inner
-loop needs is a function of the *single small unitary* U(θ) and the dense
-Hamiltonian matrix H — both 2^n_sys × 2^n_sys.  At K ≤ 16 (n_sys ≤ 4)
-that matrix is at most 16×16, so building it explicitly is far cheaper
-than thousands of circuit dispatches:
-
-  • Energies (ALL basis states at once)
-        E_x(θ) = ⟨x|U†HU|x⟩  =  diag(U†HU)_x
-    → ONE 16×16 triple product replaces K_pad QNode calls.
-
-  • Readout (ALL basis states at once)
-        diag(ρ)_k = Σ_x p_φ(x)|⟨k|U|x⟩|² = (|U|² @ p)_k
-    → ONE matvec replaces K_pad QNode calls.
-
-  • θ-gradient via parameter shift
-        dF/dθ_j = Σ_x p(x)·½(E_x(θ_j+π/2) − E_x(θ_j−π/2))
-    → 2·n_params unitary builds (each yields ALL K_pad energies),
-      replacing 2·n_params·K_pad QNode calls.
-
-  • φ-gradient — unchanged closed-form softmax gradient (already cheap).
-
-The unitary U(θ) is assembled directly in NumPy from cached single-qubit
-rotation matrices and a pre-built CNOT entangling layer (the entangler is
-parameter-independent, so it is computed once per qubit count). This
-removes PennyLane from the hot path entirely while reproducing exactly
-the same hardware-efficient ansatz, the same Walsh–Hadamard diagonal
-decomposition, and the same transverse-field / cyclic-shift mixers.
-
-Layered fixes (cf. v3_fast's four layers)
------------------------------------------
-  Layer A — Dense state-vector engine (replaces v3_fast Layer 1).
-      Pure-NumPy U(θ), H, energies, gradient, readout. The big win.
-      Verified bit-exact vs the v4 QNode path. Selectable via
-      `compute_backend` ("numpy" default, "qnode" = the original v4 path).
-
-  Layer B — Early stopping on F / responsibility stability.
-      Inherited from v4 (free_energy_tol, r_early_stop_tol). With the
-      dense engine the readout used by the r-check is a single matvec,
-      so the check is essentially free.
-
-  Layer C — Energy-vector deduplication (ports v3_fast Layer 4).
-      K-means on D = -(E[ln π] + E[ll]); run VQT on the centroids only;
-      broadcast responsibilities by nearest-centroid assignment. Win up
-      to N / n_centroids when N ≫ #distinct energy profiles.
-
-What is intentionally NOT included
-----------------------------------
-  • JAX / vmap across samples — deferred (the supervisor's multi-week
-    item). The dense engine already removes the per-step QNode overhead
-    that JAX would otherwise be needed to amortise at this scale.
-  • lightning.gpu — at n_sys ≤ 4 the state vector is ≤ 16 complex
-    numbers; any accelerator launch overhead dominates.
-
-Use
----
-    from DMM_SVVS_Variational_QAVB_v4_1 import DMM_SVVS_VQT_QAVB_Fast
-    m = DMM_SVVS_VQT_QAVB_Fast(
-        K_max=4, beta0=30.0, s0=1.0, tau1=100, tau2=200,
-        ansatz_depth=2, n_vqt_steps=40,
-        compute_backend="numpy",      # Layer A (default)
-        r_early_stop_tol=2e-3,        # Layer B (inherited)
-        dedup_n_clusters="auto",      # Layer C (None = off)
-    )
-    m.fit(X)
 
 References
 ----------
@@ -119,17 +31,6 @@ from DMM_SVVS_Variational_QAVB_v2 import (  # noqa: E402
     _safe_density_matrix_from_M,
 )
 from DMM_SVVS_Variational_QAVB_v4 import DMM_SVVS_VQT_QAVB  # noqa: E402
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Pure-NumPy state-vector engine for the VQT ansatz (Layer A internals)
-# ════════════════════════════════════════════════════════════════════════════
-#
-# These are free functions (no PennyLane) that reproduce v4's ansatz and
-# Hamiltonian *exactly*, under the same wire convention used throughout v2/v4:
-# wire 0 is the MOST significant bit. The single-qubit gate placed on wire q
-# enters the tensor product at position q from the left.
-# ----------------------------------------------------------------------------
 
 _I2 = np.eye(2, dtype=complex)
 
@@ -188,9 +89,7 @@ def _build_cnot_layer(n: int) -> np.ndarray:
 
 def _ansatz_unitary(theta: np.ndarray, n_sys: int, depth: int,
                     cnot_layer: np.ndarray) -> np.ndarray:
-    """Dense unitary U(θ) for the brick-wall (RY, RZ)+CNOT ansatz of v4.
-
-    `cnot_layer` is the cached output of `_build_cnot_layer(n_sys)`."""
+    """Dense unitary U(θ) for the brick-wall (RY, RZ)+CNOT ansatz """
     dim = 1 << n_sys
     U = np.eye(dim, dtype=complex)
     idx = 0
@@ -245,35 +144,7 @@ def _hamiltonian_matrix(d_padded: np.ndarray, s_t: float, n_sys: int,
 
 class DMM_SVVS_VQT_QAVB_Fast(DMM_SVVS_VQT_QAVB):
     """
-    Performance-optimised VQT QAVB. Inherits the full algorithm from
-    `DMM_SVVS_VQT_QAVB` (v4) and overrides only the inner per-sample loop
-    and the cross-sample E-step. Default behaviour is bit-identical to v4
-    but markedly faster.
-
-    Parameters added on top of v4
-    -----------------------------
-    compute_backend : {"numpy", "qnode"}, default "numpy"
-        "numpy" : dense state-vector engine (Layer A). Fastest at K ≤ 16.
-        "qnode" : fall back to v4's exact PennyLane path (for regression /
-                  cross-checking, or n_sys large enough that dense matrices
-                  become unwieldy — not the regime this class targets).
-    dedup_n_clusters : int | "auto" | None, default None
-        Layer C energy-vector deduplication.
-          None    -> off (every sample gets its own VQT pass).
-          int     -> cluster d_i into this many k-means centroids.
-          "auto"  -> max(K, min(N // 5, 30)) centroids.
-        Clustering is recomputed each E-step (cheap: O(N·K)).
-    dedup_kmeans_max_iter : int, default 20
-        Max MiniBatchKMeans iterations per E-step (a coarse partition is
-        enough; within-cluster diameter dominates the responsibility error).
-    dedup_min_unique_ratio : float, default 0.5
-        Skip dedup and run the per-sample path when k-means collapses to
-        fewer than this fraction of the requested centroids.
-
-    All v4 hyperparameters (ansatz_depth, n_vqt_steps, learning_rate,
-    learning_rate_phi, update_strategy, n_phi_warmup, free_energy_tol,
-    r_early_stop_tol, enumerate_basis, M_samples, warm_start, mixer, ...)
-    behave identically.
+    Performance-optimised VQT QAVB. 
     """
 
     def __init__(
@@ -316,9 +187,6 @@ class DMM_SVVS_VQT_QAVB_Fast(DMM_SVVS_VQT_QAVB):
     def _energies_numpy(self, theta: np.ndarray, H_mat: np.ndarray
                         ) -> np.ndarray:
         """All K_pad energies at once:  E_x = diag(U†HU)_x.
-
-        One triple matrix product replaces K_pad QNode evaluations.
-        Returns a real length-K_pad array.
         """
         U = _ansatz_unitary(theta, self.n_sys, self.ansatz_depth,
                             self._cnot_layer)
@@ -341,8 +209,6 @@ class DMM_SVVS_VQT_QAVB_Fast(DMM_SVVS_VQT_QAVB):
         """Parameter-shift θ-gradient using the dense engine.
 
         dF/dθ_j = Σ_x p(x)·½(E_x(θ_j+π/2) − E_x(θ_j−π/2)).
-        2·n_params unitary builds (each gives ALL K_pad energies) replace
-        2·n_params·K_pad QNode evaluations.
         """
         p = self._softmax_p(phi)
         grad = np.zeros_like(theta)
@@ -359,10 +225,6 @@ class DMM_SVVS_VQT_QAVB_Fast(DMM_SVVS_VQT_QAVB):
 
     def _vqt_responsibility_numpy(self, d_i, beta_t, s_t, sample_id=None):
         """Dense-engine twin of v4's `_vqt_responsibility`.
-
-        Identical control flow, early-stopping policy, Adam state, warm-start
-        caching and readout convention — only the energy / gradient / readout
-        primitives are swapped for the NumPy ones.
         """
         EPS = NumericalStability.EPS
 
@@ -626,10 +488,6 @@ def verify_vqt_gibbs_fast(
     return_trajectory: bool = True,
 ):
     """Level-0 + Level-1 sanity check for the v4_1 dense engine.
-
-    Same contract as v4.verify_vqt_gibbs but runs the pure-NumPy primitives,
-    so the verification path itself is fast. Compares VQT free energy and the
-    K-block trace distance against the classical Gibbs state from expm.
     """
     rng = np.random.default_rng(random_state)
     d_raw = rng.standard_normal(K) * 2.0
