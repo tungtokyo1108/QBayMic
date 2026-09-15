@@ -246,33 +246,19 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
     def _adaptive_depth_floor(self) -> int:
         """Minimum ansatz depth that can represent the mixer-dominated Gibbs
         state at high s_t on n_sys system qubits.
-
-        The VQT mixed state ρ = Σ_x p_x U|x⟩⟨x|U† must span an entangled
-        superposition across all n_sys qubits (the transverse-field driver's
-        eigenstates). The brick-wall ansatz delivers one entangling layer per
-        depth-unit, so it needs ≥ n_sys+1 layers. Empirically (probe at K=8,
-        β=30, s_t∈[0.4,0.9]): depth=2 at n_sys=3 plateaus at trace dist ~0.29
-        (a hard wall — more steps / larger lr do NOT help); depth=n_sys+1
-        reaches ~0.004 with steps≥100.
         """
         return self.n_sys + 1
 
     def _adaptive_steps_floor(self) -> int:
         """Minimum Adam steps for the high-β free-energy descent to converge
-        at depth ≥ n_sys+1 (n=40 reaches only ~0.06; n=100 reaches ~0.004).
-        Scales gently with n_sys."""
+        at depth ≥ n_sys+1.
+        """
         return 100 + 20 * max(0, self.n_sys - 2)
 
     def _apply_adaptive_expressivity(self):
         """Raise ansatz_depth / n_vqt_steps to the K-adaptive floors unless
         the user opted out (adaptive_expressivity=False). The user's requested
         values act as lower bounds, so explicitly asking for more is honoured.
-
-        This is the fix for the end-to-end ARI gap vs QuBy-expm: the QAVB
-        schedule spends its entire Phase I at high s_t (β=β0, s_t≫0), exactly
-        the regime where an under-expressive ansatz produces a near-uniform
-        readout and the M-step loses all cluster differentiation. Verified to
-        cut the worst-case trace distance ~70× (0.34 → 0.005).
         """
         if not getattr(self, "adaptive_expressivity", False):
             return
@@ -333,7 +319,7 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
     #
     # Brick-wall hardware-efficient ansatz: (RY, RZ) per qubit per layer,
     # followed by a CNOT entangling layer. For n_sys ≥ 3 the entangling
-    # layer closes into a ring. n_sys = 1 has no entangler at all.
+    # layer closes into a ring.
     # ----------------------------------------------------------------------
 
     def _ansatz(self, theta):
@@ -356,8 +342,7 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
         """X-gates that prepare the computational-basis state |basis_index⟩.
 
         Wire convention follows PennyLane's `qml.matrix` / `qml.probs`:
-        wire 0 is the MOST significant bit. This matches the convention
-        used by `_diagonal_to_pauli_z_strings` in v2.
+        wire 0 is the MOST significant bit. 
         """
         qml = self._qml
         for q in range(self.n_sys):
@@ -416,8 +401,7 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
 
     def _make_energy_qnode(self, hamiltonian):
         """Build (and cache once per call site) the per-basis-state energy
-        QNode. PennyLane re-compiles the QNode on construction, so we build
-        it once per `_vqt_responsibility` invocation rather than per step.
+        QNode. 
         """
         qml = self._qml
 
@@ -443,10 +427,6 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
 
     def _energy_per_basis_state(self, energy_qnode, theta, basis_indices=None):
         """E_x(θ) = ⟨x|U†HU|x⟩ for x ∈ basis_indices.
-
-        Returns an array of length K_pad. Indices not in `basis_indices` are
-        left as 0.0 — caller is responsible for using a consistent index set
-        in the Monte Carlo case.
         """
         if basis_indices is None:
             basis_indices = range(self.K_pad)
@@ -472,9 +452,6 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
     def _free_energy(self, theta, phi, energy_qnode, beta_t,
                      basis_indices=None):
         """F(θ, φ) = ⟨H⟩ − T·S(p_φ).
-
-        Returns (F, energies, p) so callers can re-use `energies` for the
-        closed-form φ-gradient without recomputing them.
         """
         T_t = 1.0 / beta_t
         p   = self._softmax_p(phi)
@@ -488,8 +465,6 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
 
     def _grad_theta(self, theta, phi, energy_qnode, basis_indices=None):
         """dF/dθ_j = Σ_x p(x) · 0.5·(E_x(θ_j+π/2) − E_x(θ_j−π/2))
-
-        Parameter-shift over θ. Cost: 2·p·|basis_indices| circuit evaluations.
         """
         p = self._softmax_p(phi)
         grad = np.zeros_like(theta)
@@ -515,13 +490,7 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
                     = p(x)·[E_x + T·ln p(x) − F_avg],
 
         where F_avg = Σ_y p(y)·[E_y + T·ln p(y)]. The +T constant inside the
-        bracket cancels against Σ_y p(y)·T = T in the centring term. (The
-        VQT guide's appendix prints the +T but it is a typo — it would
-        introduce a spurious uniform offset that the softmax invariance to
-        constants already absorbs, but the correct expression is cleaner.)
-
-        Pure classical computation — uses the energies already evaluated for
-        the θ-gradient pass.
+        bracket cancels against Σ_y p(y)·T = T in the centring term. 
         """
         T_t  = 1.0 / beta_t
         p    = self._softmax_p(phi)
@@ -534,8 +503,6 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
 
     def _readout_responsibility(self, theta, phi, probs_qnode=None):
         """diag(ρ)_k = Σ_x p_φ(x) · |⟨k|U(θ)|x⟩|²
-
-        Returns a length-K_pad vector (caller restricts to the K-block).
         """
         if probs_qnode is None:
             probs_qnode = self._make_probs_qnode()
@@ -551,14 +518,6 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
 
     def _vqt_responsibility(self, d_i, beta_t, s_t, sample_id=None):
         """Run free-energy minimisation for one sample.
-
-        Returns
-        -------
-        r : (K,) responsibility vector on the physical K-block.
-        stats : dict with keys
-            steps_executed       : int — number of inner Adam steps actually run
-            early_stopped        : bool
-            final_free_energy    : float
         """
         EPS = NumericalStability.EPS
 
@@ -799,13 +758,6 @@ def verify_vqt_gibbs(
                  it from above without crossing.
       • Level-1: trace distance ½‖ρ_VQT − ρ_exact‖₁ on the physical K-block,
                  plus diagonal overlap.
-
-    Returns
-    -------
-    dict with:
-        trace_distance, overlap, r_vqt, r_exact, rho_vqt, rho_exact,
-        F_vqt_final, F_exact,
-        (if return_trajectory) F_history, td_history, r_history
     """
     rng = np.random.default_rng(random_state)
     d_raw = rng.standard_normal(K) * 2.0
@@ -1005,11 +957,6 @@ def compare_varqite_vs_vqt_trajectory(
 ):
     """Side-by-side convergence trajectory for the two methods on the SAME
     random per-sample energy vector and the SAME schedule point.
-
-    Returns a dict with `td_varqite`, `td_vqt` (trace-distance histories) and
-    the final reduced density matrices for both methods. This is the figure
-    described in §9.2 of the mentor's guide — *the* central visualisation of
-    the paper's mechanism-comparison story.
     """
     # ── VQT trajectory (uses verify_vqt_gibbs's trajectory return) ────────
     res_vqt = verify_vqt_gibbs(
