@@ -3,27 +3,15 @@
 """
 DMM-SVVS with Quantum Annealing Variational Bayes — VERSION 4
 ====================================================================
-Adds the **Variational Quantum Thermalizer (VQT)** as a NISQ-friendly
+**Variational Quantum Thermalizer (VQT)** as a NISQ-friendly
 competitor to VarQITE for the per-sample Gibbs E-step.
-
-Why a new file
---------------
-v2 is the proven workhorse, hosting the classical-expm reference, the
-PennyLane purification scaffold, and VarQITE (McLachlan imaginary-time
-dynamics). v4 extends — *not replaces* — that file with a structurally
-different Lane-A method: direct free-energy minimisation in the spirit
-of Verdon, Marks, Nanda, Leichenauer, Hidary (arXiv:1910.02071, 2019).
-
-The two methods share the QAVB outer loop, the schedule, the Pauli
-decomposition of the diagonal energy, the trigamma E-LL helper and the
-warm-start pattern — all of which are imported verbatim from v2.
 
 Mechanism contrast (VarQITE vs. VQT)
 ------------------------------------
 Both methods target the same Gibbs state ρ_β = exp(-βH)/Z. They differ
 in *how* they find it:
 
-  VarQITE (v2)                             VQT (this file)
+  VarQITE                                  VQT 
   -------------                            -----------------
   • McLachlan imaginary-time dynamics      • Free-energy minimisation
   • Purified pure state on (sys, anc)      • Mixed state on sys ALONE
@@ -40,25 +28,6 @@ provided *classically* by the latent mixture p_φ(x). The mixed state
 is automatically PSD with unit trace; its spectrum is {p_φ(x)} so the
 entropy S[ρ] = -Σ_x p_φ(x) ln p_φ(x) is exactly tractable for K ≤ a
 few hundred. No quantum entropy estimation is needed.
-
-Following the guide (Verdon et al. — arXiv:1910.02071, §III + Appx.),
-we use the **categorical** parameterisation p_φ(x) = softmax(φ)_x.
-At K ≤ 32 this is unambiguously the right choice: K_pad parameters,
-fully expressive, no inner partition function. The factorised-Bernoulli
-and energy-based-model alternatives are noted in the comments but not
-implemented here because they buy nothing at this scale.
-
-Padding (K not a power of two)
-------------------------------
-We re-use the same convention as VarQITE: pad the per-sample energy
-vector to length K_pad = 2^n_sys with `PHANTOM_PENALTY` so phantom
-basis states are diagonally suppressed. At s_t = 1 the diagonal piece
-of H is multiplied by 0 — the same boundary case noted in v2 — and the
-mixer −ΣX_q can couple to phantom levels. We handle this at readout
-by dropping phantom diag entries and renormalising on the K-block, the
-same approach already adopted throughout v2. For paper-grade
-experiments at K ∈ {2, 4, 8, 16} (all powers of two), K_pad = K and the
-padding question is moot.
 
 References
 ----------
@@ -168,28 +137,14 @@ class DMM_SVVS_VQT_QAVB(_AnnealedDMMMixin, DMM_SVVS_Variational_v2):
     warm_start : bool                                               (default True)
         Carry (θ, φ) across QAVB iterations per sample.
 
-    Notes on initialisation
-    -----------------------
-    Unlike VarQITE (where the brick-wall ansatz makes θ = 0 a symmetry
-    saddle), VQT can start at θ = 0 because the mixer's off-diagonal X
-    terms couple the basis states regardless of θ — the gradient at the
-    identity circuit is generically non-zero. So we drop the
-    init_perturbation hyperparameter that VarQITE needed.
-
     Cost per inner step
     -------------------
     Energy: K_pad circuit evaluations (one per basis state).
     θ-gradient: 2·n_params · K_pad circuit evaluations.
     φ-gradient: free (uses the energies already computed).
-    Compare to VarQITE: ~p² Hadamard-test evaluations for the QFI metric
-    + p parameter-shift evaluations for C. For K=4 (n_params=12 for VQT,
-    24 for VarQITE), VQT is ≈ 3× faster per inner step; the gap widens at
-    larger K.
     """
 
-    PHANTOM_PENALTY = 1e3   # match VarQITE: large enough to suppress
-                            # phantom levels at β_t·s_t > 1, small enough
-                            # that Pauli coefficients stay sane.
+    PHANTOM_PENALTY = 1e3   
 
     def __init__(
         self,
