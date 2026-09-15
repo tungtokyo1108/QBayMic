@@ -3,58 +3,6 @@
 """
 Random Search Hyperparameter Optimisation for DMM_SVVS_Variational_v2
 ======================================================================
-
-Optimises four hyperparameters of DMM_SVVS_Variational_v2 by maximising
-the Adjusted Rand Index (ARI) against ground-truth labels.
-
-Hyperparameters searched
-------------------------
-  K_max            int      [low, high]         uniform integer
-  nu               float    (0, ∞)              log-uniform float
-  selection_prior  float    (0, 1)              uniform float
-  prune_threshold  float    (0, 1)              log-uniform float
-
-All other model parameters (zeta, eta, xi_1, xi_2, tol, max_iter,
-prune_start, prune_every, min_clusters) are fixed during the search.
-
-Usage
------
-    from random_search_dmm_svvs import random_search, refit_best, print_top_k
-
-    results = random_search(
-        X           = X,           # (N, S) count matrix
-        true_labels = true_labels, # (N,)   ground-truth cluster labels
-        n_trials    = 60,
-
-        # Override any range you like; defaults are used for the rest
-        K_max_range           = (3, 15),
-        nu_range              = (0.01, 2.0),
-        selection_prior_range = (0.05, 0.95),
-        prune_threshold_range = (1e-4, 0.1),
-
-        master_seed = 42,
-        verbose     = True,
-    )
-
-    print_top_k(results, top_k=10)
-
-    best_model = refit_best(
-        X           = X,
-        true_labels = true_labels,
-        best_result = results["best_result"],
-        n_restarts  = 5,
-        verbose     = True,
-    )
-
-Returns
--------
-random_search() returns a dict with:
-    best_config  : dict  — hyperparameters of the best trial
-    best_result  : dict  — full result record of the best trial
-    all_results  : list  — all trial records sorted by ARI descending
-
-Each result record contains:
-    ari, nmi, K_estimated, elapsed, config, trial_seed, error (or None)
 """
 
 import json
