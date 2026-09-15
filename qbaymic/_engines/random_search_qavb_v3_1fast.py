@@ -4,88 +4,6 @@
 Random Search Hyperparameter Optimisation for DMM_SVVS_VarQITE_QAVB_JAX (v3.1)
 ================================================================================
 
-Mirrors `random_search_qavb_v2.py` in structure and API, but targets the JAX
-+ JIT + vmap VarQITE model — DMM_SVVS_VarQITE_QAVB_JAX from
-DMM_SVVS_Variational_QAVB_v3_1 — and maximises ARI against ground-truth
-labels by random search over the same six clustering-relevant hyperparameters.
-
-The boolean toggle use_trigamma_correction is FIXED to False throughout the
-search (per the user's memory: trigamma correction off for QAVB).
-
-Hyperparameters searched
-------------------------
-  K_max            int      [low, high]          uniform integer
-  nu               float    (0, ∞)               log-uniform float
-  selection_prior  float    (0, 1)               uniform float
-  prune_threshold  float    (0, 1)               log-uniform float
-  tau1             int      [low, high]          uniform integer (quantum phase end)
-  tau2             int      tau1 + delta         uniform integer (thermal phase end)
-
-Hyperparameters held fixed
---------------------------
-  use_trigamma_correction = False   (per user memory)
-  zeta, eta, xi_1, xi_2   = 1.0
-  beta0                   = 30.0
-  s0                      = 1.0
-  tol                     = 1e-4
-  max_iter                = 400     (search budget; refit_best uses 600)
-  prune_start             = 10
-  prune_every             = 5
-  min_clusters            = None
-  # VarQITE-specific
-  n_varqite_steps         = 40
-  ansatz_depth            = 3
-  mixer                   = "cyclic_shift"  (avoids the transverse-field
-                                             phantom-coupling problem at any K)
-  regularization          = 1e-4
-  warm_start              = True
-  init_perturbation       = 0.05
-  metric_approx           = None
-  # v3_fast layers 2-4 (inherited)
-  metric_refresh          = 1       (exact per-step McLachlan, no caching)
-  r_early_stop_tol        = None    (ignored on the JAX path anyway)
-  dedup_n_clusters        = "auto"  (centroid-VarQITE for speed on large N)
-  sample_batch_size       = None    (one vmap over all N)
-  jit_warmup              = True
-  # Padding-fidelity knobs (Fix A + Fix B from the supervisor's Rung-1 guide)
-  phantom_penalty         = 10.0    (was 1000 — softens stiffness on padded K)
-  decouple_phantom_mixer  = True    (inert for cyclic_shift; projects
-                                     transverse-field onto K-block if used)
-  # Integrator + multi-restart knobs (Fix C + Fix D from the gap audit)
-  dtau_max                = 0.2     (clamps Euler step; auto-bumps
-                                     n_varqite_steps to ≥75 at β=30)
-  n_estep_restarts        = 3       (multi-restart McLachlan; per E-step,
-                                     keeps lowest-⟨H⟩ trajectory. Drop to 1
-                                     for a faster but lower-quality search.)
-
-Usage
------
-    from random_search_qavb_v3_1 import random_search, refit_best, print_top_k
-
-    results = random_search(
-        X           = X,
-        true_labels = true_labels,
-        n_trials    = 30,
-        master_seed = 42,
-        verbose     = True,
-    )
-
-    print_top_k(results, top_k=10)
-
-    best_model = refit_best(
-        X           = X,
-        true_labels = true_labels,
-        best_result = results["best_result"],
-        n_restarts  = 3,
-    )
-
-Returns
--------
-random_search() returns a dict with:
-    best_config  : dict  — hyperparameters of the best trial
-    best_result  : dict  — full record of the best trial (ari, nmi, K, ...)
-    all_results  : list  — every trial record sorted by ARI descending
-    model_class  : str   — "VarQITE_QAVB_JAX_v3_1"
 """
 
 import json
@@ -142,43 +60,15 @@ FIXED_PARAMS = dict(
     # ── v3.1 JAX knobs ───────────────────────────────────────────────────
     sample_batch_size       = None,
     jit_warmup              = True,
-    # ── Padding-fidelity knobs (Fix A + Fix B; supervisor's Rung-1 guide) ─
-    # Fix A: phantom_penalty=10 (was 1e3) restores max-prob 1.0000 on every
-    # padded K in {3,5,6,7} at depth=3, n_steps=80 in the unit probe
-    # (probe_padding_rung0_rung1.py). Non-monotonic in penalty — 10 is the
-    # specific operating point, not "softer is always better."
-    # Fix B: decouple_phantom_mixer=True is inert for the cyclic_shift mixer
-    # (v2 already zeros phantom rows/cols at line 1169-1177) but is the
-    # supervisor's recommended setting; if a trial switches mixer to
-    # transverse_field, the K-block projection then matters.
     phantom_penalty         = 10.0,
     decouple_phantom_mixer  = True,
-    # ── Integrator-stability knob (Fix C — Issue #4 from the gap audit) ──
-    # dtau_max=0.2 clamps the McLachlan Euler step size. Without it, at
-    # beta0=30 and the user-requested n_varqite_steps=40 above, dtau =
-    # (30/2)/40 = 0.375, which exceeds the stability threshold ~0.4 found
-    # in probe_v3_1_dtau_sweep.py and the trajectory overshoots / collapses
-    # to ~uniform. With the clamp, n_varqite_steps is internally bumped to
-    # ceil((beta0/2)/dtau_max) = ceil(15/0.2) = 75 at beta0=30 — the user
-    # n_varqite_steps above (40) is a LOWER BOUND. Pass dtau_max=None to
-    # disable the clamp.
     dtau_max                = 0.2,
-    # ── Multi-restart E-step (Fix D — Issue #2 from the gap audit) ───────
-    # n_estep_restarts=3 runs the McLachlan trajectory 3 times per E-step
-    # from different theta_0 perturbations and selects per sample the one
-    # with the lowest <H>(theta_final). On Rung-4 hard data, R=3 lifts
-    # median ARI 0.492 -> 0.574 (BEATS QuBy-expm 0.556). R=5 plateaus.
-    # R=1 disables the fix (legacy). Wall-time cost is ~3x per fit at R=3.
-    #
-    # For a FAST search prioritising hyperparameter coverage over per-trial
-    # quality, set this to 1. For a HIGH-QUALITY search at ~3x the cost,
-    # leave it at 3. Recommended for the difficult-regime search.
     n_estep_restarts        = 2,
 )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sampling helpers  (identical to v2 — kept local so both files stand alone)
+# Sampling helpers  
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _sample_int(rng, low, high):
@@ -194,9 +84,6 @@ def _sample_uniform(rng, low, high):
 def _sample_loguniform(rng, low, high):
     """
     Sample a float log-uniformly from [low, high).
-
-    Log-uniform sampling allocates equal probability mass per decade,
-    appropriate for scale parameters such as nu and prune_threshold.
     """
     log_low  = np.log(float(low))
     log_high = np.log(float(high))
@@ -243,24 +130,7 @@ def _sample_config(rng,
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_trial(X, true_labels, config, trial_seed):
-    """
-    Fit one DMM_SVVS_VarQITE_QAVB_JAX configuration and return ARI, NMI,
-    K_estimated, elapsed.
-
-    On any exception (numerical failure, invalid config) the trial returns
-    ARI = NMI = -1 with the error message attached.
-
-    Parameters
-    ----------
-    X            : (N, S) float array
-    true_labels  : (N,)   int array
-    config       : dict   — sampled hyperparameters
-    trial_seed   : int    — random_state for this trial
-
-    Returns
-    -------
-    dict with keys: ari, nmi, K_estimated, elapsed, config, trial_seed, error
-    """
+    
     params = {**FIXED_PARAMS, **config, "random_state": trial_seed}
     t0     = _time.time()
     error  = None
@@ -304,46 +174,7 @@ def random_search(X,
                   tau2_delta_range        = DEFAULT_TAU2_DELTA_RANGE,
                   master_seed             = 42,
                   verbose                 = True):
-    """
-    Random search over DMM_SVVS_VarQITE_QAVB_JAX hyperparameters,
-    maximising ARI.
-
-    use_trigamma_correction is fixed to False throughout the search.
-
-    Parameters
-    ----------
-    X : np.ndarray, shape (N, S)
-        Count data matrix.
-    true_labels : np.ndarray, shape (N,)
-        Ground-truth cluster labels for ARI evaluation.
-    n_trials : int
-        Number of random configurations to evaluate.
-    K_max_range : tuple (int_low, int_high)
-        Truncation level range.  Both ends inclusive.
-    nu_range : tuple (float_low, float_high)
-        DP concentration parameter range.  Sampled log-uniformly.
-    selection_prior_range : tuple (float_low, float_high)
-        Initial feature-selection warm-start.  Sampled uniformly.
-    prune_threshold_range : tuple (float_low, float_high)
-        Cluster deletion threshold.  Sampled log-uniformly.
-    tau1_range : tuple (int_low, int_high)
-        Quantum-annealing phase length, in iterations.
-    tau2_delta_range : tuple (int_low, int_high)
-        Additional iterations after tau1 for the thermal-annealing phase.
-        Actual tau2 = tau1 + delta.
-    master_seed : int
-        Seed for the search RNG — makes the entire run reproducible.
-    verbose : bool
-        Print a live per-trial progress table if True.
-
-    Returns
-    -------
-    dict with keys:
-        best_config   : dict  — hyperparameters of the best trial
-        best_result   : dict  — full result record of the best trial
-        all_results   : list  — all trial records sorted by ARI descending
-        model_class   : str   — "VarQITE_QAVB_JAX_v3_1"
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
     master_rng  = np.random.default_rng(int(master_seed))
@@ -430,33 +261,7 @@ def refit_best(X,
                n_restarts   = 5,
                max_iter     = 600,
                verbose      = True):
-    """
-    Re-fit DMM_SVVS_VarQITE_QAVB_JAX using the best configuration found by
-    random_search, running multiple independent restarts and keeping the
-    one with the highest ARI.
-
-    The original trial_seed that produced the best ARI during the search is
-    always used as one of the restart seeds, guaranteeing the search result
-    is reproduced at minimum.
-
-    Parameters
-    ----------
-    X            : np.ndarray, shape (N, S)
-    true_labels  : np.ndarray, shape (N,)
-    best_result  : dict
-        The dict under results["best_result"] returned by random_search().
-        Must contain keys "config" and "trial_seed".
-    n_restarts   : int
-        Total number of independent random restarts.
-    max_iter     : int
-        Maximum CAVI iterations per restart (higher than search budget).
-    verbose      : bool
-
-    Returns
-    -------
-    Fitted DMM_SVVS_VarQITE_QAVB_JAX instance with the highest ARI across
-    all restarts.
-    """
+    
     X           = np.asarray(X, dtype=float)
     true_labels = np.asarray(true_labels)
 
