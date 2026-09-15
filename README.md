@@ -11,7 +11,9 @@
   </tr>
 </table>
 
-# QBayMic — Quantum Bayesian clustering of microbiome count data
+## The workflow of QBayMic
+
+<img src="QBayMic_method.png" width="1000" height="500">
 
 QBayMic fits a **Dirichlet–multinomial mixture with stochastic variable
 selection** (DMM-SVVS) to microbiome count data, and lets you run the E-step with a **quantum** engine. A barrier diagnostic, the *signal fraction* **σ**, predicts *before* clustering whether the quantum E-step will
