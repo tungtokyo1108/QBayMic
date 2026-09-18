@@ -6,7 +6,7 @@
     </td>
     <td>
       <h1>QBayMic — Quantum Bayesian Microbiome</h1>
-      <h3>Dang, T., Lysenko, A., & Tsunoda, T. (2026).</h3>
+      <h3>Tung Dang, Artem Lysenko, and Tatsuhiko Tsunoda (2026).</h3>
     </td>
   </tr>
 </table>
