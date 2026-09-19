@@ -2,7 +2,7 @@
 <table border="0">
   <tr>
     <td>
-      <img src="Logo.png" width="850" valign="middle">
+      <img src="Logo.png" width="950" valign="middle">
     </td>
     <td>
       <h1>QBayMic — Quantum Bayesian Microbiome</h1>
